@@ -1,0 +1,6 @@
+bot-finance-tool
+Copyright 2026 ipcanada
+
+The companion agent skills were adapted from Anthropic's financial-services
+repository (https://github.com/anthropics/financial-services, Apache-2.0),
+with data sources swapped to fin.py and SEC EDGAR.

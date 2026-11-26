@@ -3,7 +3,10 @@
 
 Sources (only these): Yahoo Finance (yfinance, no key), Google Finance (public quote
 pages, scraped, no key), Alpha Vantage (ALPHAVANTAGE_API_KEY), Finnhub (FINNHUB_API_KEY),
-SEC EDGAR (no key, needs SEC_USER_AGENT contact string).
+SEC EDGAR (no key, needs SEC_USER_AGENT contact string), SEDAR+ (public website, no key;
+Canadian issuers that are not SEC registrants). SEDAR+ has no public API. This client
+makes one identifiable request and stops if the site returns a block page or captcha.
+It does not bypass either.
 
 Every command prints one JSON object to stdout:
   {command, symbol, ok, source, source_url, retrieved_at_utc, data, attempts:[...], notes:[...]}
@@ -19,7 +22,8 @@ except ImportError:  # pragma: no cover
     print(json.dumps({"ok": False, "error": "pip install --user requests yfinance"}))
     sys.exit(2)
 
-VERSION = "1.0"
+__version__ = "1.0.0"
+VERSION = __version__
 AV_KEY = os.environ.get("ALPHAVANTAGE_API_KEY", "").strip()
 FH_KEY = os.environ.get("FINNHUB_API_KEY", "").strip()
 SEC_UA = os.environ.get("SEC_USER_AGENT", "").strip() or "fin.py research tool (set SEC_USER_AGENT to 'Name email')"
@@ -91,6 +95,9 @@ GOOGLE_EXCH = {".TO": "TSE", ".V": "CVE", ".NE": "NEO", ".CN": "CNSX", ".L": "LO
                ".AS": "AMS", ".HK": "HKG", ".T": "TYO", ".AX": "ASX", ".NS": "NSE", ".BO": "BOM", ".SW": "SWX"}
 YAHOO_US_EXCH = {"NMS": "NASDAQ", "NGM": "NASDAQ", "NCM": "NASDAQ", "NAS": "NASDAQ", "NYQ": "NYSE",
                  "ASE": "NYSEAMERICAN", "PCX": "NYSEARCA", "BTS": "BATS"}
+# Yahoo suffixes for Canadian listing venues. Presence of one of these is not proof the
+# issuer skips the SEC: interlisted names (RY.TO) still resolve to an EDGAR CIK.
+CA_SUFFIXES = {".TO", ".V", ".NE", ".CN"}
 
 
 def split_suffix(sym):
@@ -211,8 +218,11 @@ def resolve_cik(sym, notes):
             if c != s and suf:
                 notes.append(f"EDGAR: {sym} mapped to US-listed ticker {c} ({v['title']}); confirm it is the same issuer. "
                              "Foreign private issuers file 40-F/20-F/6-K, not 10-K/10-Q.")
+                if suf in CA_SUFFIXES:
+                    notes.append("If that EDGAR issuer is a different company than the Canadian listing, rerun filings with --source sedarplus.")
             return str(v["cik_str"]).zfill(10), c, v["title"]
-    raise Skip(f"{sym} not found in EDGAR ticker map (not an SEC registrant? Canadian-only issuers file on SEDAR+, which this tool does not cover)")
+    raise Skip(f"{sym} not found in EDGAR ticker map (not an SEC registrant). "
+               "filings then tries SEDAR+ for a .TO/.V/.NE/.CN ticker or a company name.")
 
 
 def html_to_text(h):
@@ -277,6 +287,178 @@ def google_quote(sym, exch=None):
     return {"name": name.group(1) if name else None, "price_text": raw_price,
             "price": float(re.sub(r"[^\d.\-]", "", raw_price) or "nan"), "key_stats_text": stats,
             "caveat": "Scraped from a public web page; Google states data may be delayed and is not for trading. Layout changes can break parsing."}, url
+
+
+# ---------------------------------------------------------------- sources: SEDAR+
+# Public Canadian filings site. No API. Terms forbid robots, scraping, automated
+# searches, and database building (https://systems.securities-administrators.ca/terms-of-use/).
+# One identifiable request per call. A captcha or block page stops the lookup; this
+# client does not solve challenges, forge cookies, or hunt for a side door.
+SEDAR_HOME = "https://www.sedarplus.ca/"
+SEDAR_TERMS = "https://systems.securities-administrators.ca/terms-of-use/"
+SEDAR_MIN_INTERVAL = 5.0
+_last_sedar = [0.0]
+SEDAR_BLOCK_MARKERS = (
+    "radware block page",
+    "hcaptcha",
+    "captcha.perfdrive.com",
+    "cdn.perfdrive.com",
+    "verifying your browser",
+    "shieldsquare",
+    "cf-browser-verification",
+)
+SEDAR_TERMS_NOTE = (
+    "SEDAR+ terms (Alberta Securities Commission) prohibit robots, scraping, automated searches, "
+    "and building a database. This command sends one request, identifies itself, and stops on a "
+    "captcha or block page. Cite SEDAR+ as the source and do not treat a download as an official copy. "
+    + SEDAR_TERMS
+)
+
+
+def sedar_user_agent():
+    contact = SEC_UA if re.search(r"\S+@\S+", SEC_UA) else "set SEC_USER_AGENT to 'Name email'"
+    return f"fin.py/{__version__} ({contact}; one public-page lookup; does not bypass captchas)"
+
+
+def sedar_applicable(sym):
+    """True when filings should fall through to SEDAR+ if EDGAR has no CIK."""
+    if not sym or re.fullmatch(r"\d{1,10}", str(sym).strip()):
+        return False
+    if " " in str(sym).strip():
+        return True
+    return split_suffix(str(sym).strip().upper())[1] in CA_SUFFIXES
+
+
+def sedar_fallback_allowed(sym, attempts):
+    """Raise Skip unless this symbol is a Canadian miss on EDGAR (or EDGAR was not asked)."""
+    if not sedar_applicable(sym):
+        raise Skip("not a Canadian .TO/.V/.NE/.CN ticker or a company name")
+    edgar_attempt = next((x for x in attempts if x.get("source") == "sec_edgar"), None)
+    # No EDGAR attempt means the caller forced --source sedarplus.
+    # A 403, throttle, or network error is not proof the issuer has no CIK.
+    if edgar_attempt and "not found in EDGAR ticker map" not in (edgar_attempt.get("message") or ""):
+        raise Skip("EDGAR did not confirm this issuer is absent from the SEC ticker map; not sending it to SEDAR+")
+
+
+def sedar_block_reason(status, body, server_header):
+    """Return an error string when this response is a block/captcha, else None.
+
+    Status 401/403/429/503 counts even if the body is a bare 403 page (Radware's
+    `rdwr` server does that). Marker matches cover a 200 challenge interstitial.
+    """
+    low = (body or "")[:20000].lower()
+    server = (server_header or "").lower()
+    captcha = any(m in low for m in SEDAR_BLOCK_MARKERS)
+    radware = "rdwr" in server
+    hard = status in (401, 403, 429, 503)
+    if not (captcha or radware or hard):
+        return None
+    bits = []
+    if captcha or radware:
+        bits.append("browser-verification captcha (Radware)")
+    if status and status != 200:
+        bits.append(f"HTTP {status}")
+    if server_header and "rdwr" in server:
+        bits.append("server rdwr")
+    extra = ""
+    m = re.search(r"(?:transaction|incident)\s+id:\s*([0-9a-zA-Z-]{8,})", body or "", re.I)
+    if m:
+        extra = f" Reference {m.group(1)[:80]}."
+    return (
+        "SEDAR+ blocked this request (" + "; ".join(bits) + "). "
+        "fin.py does not bypass captchas or access controls, and no issuer search was submitted."
+        + extra + " Open " + SEDAR_HOME + " in a browser. Terms: " + SEDAR_TERMS
+    )
+
+
+def _sedar_body_sample(r):
+    ctype = (r.headers.get("content-type") or "").lower()
+    if any(k in ctype for k in ("pdf", "octet-stream", "zip", "msword", "spreadsheet")):
+        return ""
+    try:
+        return r.text or ""
+    except Exception:
+        return ""
+
+
+def _sedar_pace():
+    """Space lookups across processes. The terms forbid load that burdens the site."""
+    interval = SEDAR_MIN_INTERVAL
+    if interval <= 0:
+        return
+    last = _last_sedar[0]
+    try:
+        CACHE.mkdir(parents=True, exist_ok=True)
+        stamp = CACHE / "sedarplus.last"
+        if stamp.exists():
+            last = max(last, float(stamp.read_text().strip() or "0"))
+    except (OSError, ValueError):
+        stamp = None
+    wait = interval - (time.time() - last)
+    if wait > 0:
+        time.sleep(wait)
+    ts = time.time()
+    _last_sedar[0] = ts
+    if stamp is not None:
+        try:
+            stamp.write_text(str(ts))
+        except OSError:
+            pass
+
+
+def sedar_fetch(url):
+    _sedar_pace()
+    try:
+        r = requests.get(url, headers={
+            "User-Agent": sedar_user_agent(),
+            "Accept": "text/html,application/pdf;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en",
+        }, timeout=TIMEOUT)
+    except requests.RequestException as e:
+        raise Skip(f"SEDAR+ unreachable: {type(e).__name__}: {str(e)[:160]}")
+    reason = sedar_block_reason(r.status_code, _sedar_body_sample(r), r.headers.get("server", ""))
+    if reason:
+        raise Skip(reason)
+    if r.status_code == 200:
+        return r
+    raise Skip(f"SEDAR+ HTTP {r.status_code} (no filings parsed)")
+
+
+def _sedar_document_url(document):
+    if not document or not re.match(r"https://([a-z0-9-]+\.)?sedarplus\.ca/", document, re.I):
+        raise Skip("refusing --document: only an https://www.sedarplus.ca/ or https://*.sedarplus.ca/ URL is fetched")
+    return document
+
+
+def sedar_query(query, limit, forms=None, document=None, save=None):
+    """One SEDAR+ request. Block pages raise Skip. An unrecognized 200 raises Empty.
+
+    `query`, `limit`, and `forms` describe the lookup the caller asked for. They are
+    applied only when a results page this client understands is actually returned.
+    """
+    if save and not document:
+        raise Skip("--save requires --document with a full SEDAR+ document URL")
+    if document:
+        url = _sedar_document_url(document)
+        r = sedar_fetch(url)
+        if save:
+            Path(save).write_bytes(r.content)
+        return {
+            "query": query,
+            "document": url,
+            "content_type": r.headers.get("content-type"),
+            "bytes": len(r.content),
+            "saved_to": save,
+            "caveat": "Bytes as returned by the SEDAR+ public site. Not an official certified copy.",
+        }, url
+    r = sedar_fetch(SEDAR_HOME)
+    raise Empty(
+        f"SEDAR+ HTTP {r.status_code} from {SEDAR_HOME} is not a filing list this client recognizes "
+        "(layout changed or a script shell with no documents). "
+        f"No filings parsed for {query!r}"
+        + (f" forms={forms!r}" if forms else "")
+        + f" limit={limit}. No further requests were made."
+    )
 
 
 # ---------------------------------------------------------------- runner
@@ -729,9 +911,42 @@ def cmd_filings(a, R):
             out["truncated"] = len(text) > a.offset + a.max_chars
         return out, url
 
-    R.try_sources([("sec_edgar", edgar_doc if a.accession else edgar_list)])
-    if not a.accession:
+    def sedar_list():
+        sedar_fallback_allowed(s, R.out["attempts"])
+        R.out["notes"].append(SEDAR_TERMS_NOTE)
+        if a.forms:
+            R.out["notes"].append(
+                "SEDAR+ document-type filter requested (" + a.forms + "). "
+                "It is applied only when a results page is returned."
+            )
+        return sedar_query(s, a.limit, a.forms)
+
+    if a.accession:
+        chain = [("sec_edgar", edgar_doc)]
+    else:
+        chain = [("sec_edgar", edgar_list), ("sedarplus", sedar_list)]
+    R.try_sources(pick_sources(a, chain))
+    if R.out["ok"] and R.out["source"] == "sec_edgar" and not a.accession:
         R.out["notes"].append("Fetch text with: fin.py filings SYMBOL --accession <accession> [--grep REGEX | --save file.txt]. Exhibits (e.g. ex99-1 press release) via --document <name> from files_in_filing.")
+    if R.out["ok"] and R.out["source"] == "sedarplus":
+        R.out["notes"].append("Save a document URL with: fin.py sedar QUERY --document https://www.sedarplus.ca/... --save filing.pdf")
+
+
+def cmd_sedar(a, R):
+    """Canadian issuer lookup on the SEDAR+ public site. One request; captcha stops it."""
+    s = a.symbol
+
+    def run():
+        R.out["notes"].append(SEDAR_TERMS_NOTE)
+        if a.forms:
+            R.out["notes"].append(
+                "Document types requested (" + a.forms + "): interim financial statements, MD&A, "
+                "annual information form, annual financial statements, news releases, material change reports "
+                "are typical SEDAR+ names. The filter is applied only when a results page is returned."
+            )
+        return sedar_query(s, a.limit, a.forms, document=a.document, save=a.save)
+
+    R.try_sources([("sedarplus", run)])
 
 
 def cmd_search(a, R):
@@ -817,7 +1032,7 @@ def cmd_holders(a, R):
 
 
 def cmd_doctor(a, R):
-    checks = {}
+    checks = {"version": __version__}
     try:
         import yfinance
         checks["yahoo"] = {"lib": f"yfinance {yfinance.__version__}"}
@@ -827,20 +1042,29 @@ def cmd_doctor(a, R):
     checks["finnhub"] = {"key": "set" if FH_KEY else "missing (FINNHUB_API_KEY)", "free_tier": "60 calls/min; US-centric, many endpoints premium"}
     checks["sec_edgar"] = {"user_agent": SEC_UA, "ok_format": bool(re.search(r"\S+@\S+", SEC_UA))}
     checks["google"] = {"method": "public quote page scrape, no key, fragile"}
+    checks["sedarplus"] = {
+        "method": "one identifiable GET of the public site; no API key; captcha is not bypassed",
+        "user_agent": sedar_user_agent(),
+        "min_interval_seconds": SEDAR_MIN_INTERVAL,
+        "routing": "filings tries sedarplus only after EDGAR has no CIK, for .TO/.V/.NE/.CN or a company name",
+        "terms": SEDAR_TERMS,
+        "limits": "Terms prohibit robots, scraping, automated searches, and databases. A block page or layout change fails the lookup.",
+    }
     R.out.update(ok=True, source="local", retrieved_at_utc=now_utc(), data=checks)
 
 
 # ---------------------------------------------------------------- CLI
 def main(argv=None):
     p = argparse.ArgumentParser(prog="fin.py", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--version", action="version", version=f"fin.py {__version__}")
     sp = p.add_subparsers(dest="cmd", required=True)
 
-    def add(name, fn, symbol=True, src=True, **kw):
+    def add(name, fn, symbol=True, src=True, symbol_help=None, **kw):
         q = sp.add_parser(name, **kw)
         if symbol:
-            q.add_argument("symbol", help="Yahoo-style ticker (AAPL, RY.TO, SHOP.TO) or SEC CIK for EDGAR commands")
+            q.add_argument("symbol", help=symbol_help or "Yahoo-style ticker (AAPL, RY.TO, CSU.TO), a Canadian company name, or an SEC CIK for EDGAR")
         if src:
-            q.add_argument("--source", help="comma list to restrict/force sources, e.g. finnhub,alphavantage")
+            q.add_argument("--source", help="comma list to restrict/force sources, e.g. finnhub,alphavantage or sec_edgar,sedarplus")
         q.set_defaults(fn=fn)
         return q
 
@@ -861,11 +1085,18 @@ def main(argv=None):
     q = add("holders", cmd_holders, help="top institutional / fund holders"); q.add_argument("--limit", type=int, default=10)
     q = add("news", cmd_news, help="recent company news"); q.add_argument("--limit", type=int, default=10); q.add_argument("--days", type=int, default=14)
     q = add("prices", cmd_prices, help="price history"); q.add_argument("--period", default="1y"); q.add_argument("--interval", default="1d")
-    q = add("filings", cmd_filings, src=False, help="EDGAR filing list, or a filing's text with --accession")
-    q.add_argument("--forms", help="e.g. 10-K,10-Q,8-K,40-F,6-K,DEF 14A,S-4"); q.add_argument("--limit", type=int, default=20)
-    q.add_argument("--accession"); q.add_argument("--document", help="file name inside the filing (exhibits)")
+    q = add("filings", cmd_filings, help="EDGAR filing list, or SEDAR+ when the issuer has no SEC CIK")
+    q.add_argument("--forms", help="EDGAR: 10-K,10-Q,8-K,40-F,6-K. SEDAR+: annual information form, interim financial statements, MD&A, news release, material change report")
+    q.add_argument("--limit", type=int, default=20)
+    q.add_argument("--accession"); q.add_argument("--document", help="file name inside the EDGAR filing (exhibits)")
     q.add_argument("--grep", help="regex; return matching paragraphs only"); q.add_argument("--max-chars", type=int, default=20000)
     q.add_argument("--offset", type=int, default=0); q.add_argument("--save", help="write full text to this path")
+    q = add("sedar", cmd_sedar, src=False, symbol_help="TSX/TSXV/NEO/CSE ticker (CSU.TO, ABC.V) or issuer name",
+            help="list recent SEDAR+ filings, or download one document URL")
+    q.add_argument("--forms", help="e.g. annual information form,interim financial statements,MD&A,news release,material change report")
+    q.add_argument("--limit", type=int, default=20)
+    q.add_argument("--document", help="https://www.sedarplus.ca/... document URL to fetch (one request)")
+    q.add_argument("--save", help="write --document bytes to this path")
     q = add("search", cmd_search, symbol=False, src=False, help="EDGAR full-text search")
     q.add_argument("query", help='e.g. "agreement and plan of merger" "Acme Corp"'); q.add_argument("--forms")
     q.add_argument("--start"); q.add_argument("--end"); q.add_argument("--limit", type=int, default=20)

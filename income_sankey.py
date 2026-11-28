@@ -53,6 +53,18 @@ RED = "#D9534F"
 SEG = "#3B5B8C"
 BG = "#ECECEC"
 MUTED = "#555555"
+# Revenue may follow a logo. It stays at least this far (CIEDE2000) from the
+# cost red and the profit green, and at least this WCAG contrast against the
+# chart background. Near-white logo ink (OKLab L and chroma below) falls back
+# to navy because it would disappear on the background.
+MIN_DELTA_E = 18.0
+MIN_CONTRAST = 3.0
+NEAR_WHITE_L = 0.90
+NEAR_WHITE_CHROMA = 0.06
+_BG_RGB = (0xEC, 0xEC, 0xEC)
+_COST_RGB = (0xD9, 0x53, 0x4F)
+_PROFIT_RGB = (0x2E, 0x9E, 0x5B)
+_NAVY_RGB = (0x14, 0x21, 0x3D)
 
 _CURRENCY_SYMBOL = {
     "USD": "$",
@@ -102,6 +114,307 @@ class SpecError(ValueError):
 
 class ChartDependencyError(RuntimeError):
     """matplotlib, Pillow, or an SVG rasterizer is not installed."""
+
+
+def _srgb_channel_to_linear(u):
+    u = u / 255.0
+    if u <= 0.04045:
+        return u / 12.92
+    return ((u + 0.055) / 1.055) ** 2.4
+
+
+def _linear_to_srgb_channel(u):
+    u = 0.0 if u < 0 else (1.0 if u > 1 else u)
+    if u <= 0.0031308:
+        u = 12.92 * u
+    else:
+        u = 1.055 * (u ** (1 / 2.4)) - 0.055
+    return int(round(max(0.0, min(1.0, u)) * 255))
+
+
+def relative_luminance(rgb):
+    r, g, b = (_srgb_channel_to_linear(c) for c in rgb)
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def contrast_ratio(rgb, other=_BG_RGB):
+    lighter = relative_luminance(rgb)
+    darker = relative_luminance(other)
+    if lighter < darker:
+        lighter, darker = darker, lighter
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+def srgb_to_lab(rgb):
+    r, g, b = (_srgb_channel_to_linear(c) for c in rgb)
+    x = 0.4124564 * r + 0.3575761 * g + 0.1804375 * b
+    y = 0.2126729 * r + 0.7151522 * g + 0.0721750 * b
+    z = 0.0193339 * r + 0.1191920 * g + 0.9503041 * b
+    xn, yn, zn = 0.95047, 1.0, 1.08883
+
+    def f(t):
+        delta = 6 / 29
+        if t > delta ** 3:
+            return t ** (1 / 3)
+        return t / (3 * delta ** 2) + 4 / 29
+
+    fx, fy, fz = f(x / xn), f(y / yn), f(z / zn)
+    return (116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz))
+
+
+def ciede2000(lab1, lab2):
+    """CIEDE2000 color difference. Lab components are L*, a*, b*."""
+    L1, a1, b1 = lab1
+    L2, a2, b2 = lab2
+    C1 = math.hypot(a1, b1)
+    C2 = math.hypot(a2, b2)
+    cbar = (C1 + C2) / 2
+    cbar7 = cbar ** 7
+    G = 0.5 * (1 - math.sqrt(cbar7 / (cbar7 + 25 ** 7)))
+    a1p = (1 + G) * a1
+    a2p = (1 + G) * a2
+    C1p = math.hypot(a1p, b1)
+    C2p = math.hypot(a2p, b2)
+    h1p = math.degrees(math.atan2(b1, a1p)) % 360
+    h2p = math.degrees(math.atan2(b2, a2p)) % 360
+    dLp = L2 - L1
+    dCp = C2p - C1p
+    dhp = 0.0
+    if C1p * C2p != 0:
+        dh = h2p - h1p
+        if dh > 180:
+            dh -= 360
+        elif dh < -180:
+            dh += 360
+        dhp = dh
+    dHp = 2 * math.sqrt(C1p * C2p) * math.sin(math.radians(dhp) / 2)
+    Lbar = (L1 + L2) / 2
+    Cbarp = (C1p + C2p) / 2
+    if C1p * C2p == 0:
+        Hbar = h1p + h2p
+    elif abs(h1p - h2p) > 180:
+        Hbar = (h1p + h2p + 360) / 2 if (h1p + h2p) < 360 else (h1p + h2p - 360) / 2
+    else:
+        Hbar = (h1p + h2p) / 2
+    T = (
+        1
+        - 0.17 * math.cos(math.radians(Hbar - 30))
+        + 0.24 * math.cos(math.radians(2 * Hbar))
+        + 0.32 * math.cos(math.radians(3 * Hbar + 6))
+        - 0.20 * math.cos(math.radians(4 * Hbar - 63))
+    )
+    dtheta = 30 * math.exp(-((Hbar - 275) / 25) ** 2)
+    Cbarp7 = Cbarp ** 7
+    Rc = 2 * math.sqrt(Cbarp7 / (Cbarp7 + 25 ** 7))
+    Sl = 1 + (0.015 * (Lbar - 50) ** 2) / math.sqrt(20 + (Lbar - 50) ** 2)
+    Sc = 1 + 0.045 * Cbarp
+    Sh = 1 + 0.015 * Cbarp * T
+    Rt = -math.sin(math.radians(2 * dtheta)) * Rc
+    return math.sqrt((dLp / Sl) ** 2 + (dCp / Sc) ** 2 + (dHp / Sh) ** 2 + Rt * (dCp / Sc) * (dHp / Sh))
+
+
+def ciede2000_rgb(rgb, other):
+    return ciede2000(srgb_to_lab(rgb), srgb_to_lab(other))
+
+
+def srgb_to_oklab(rgb):
+    r, g, b = (_srgb_channel_to_linear(c) for c in rgb)
+    l = 0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b
+    m = 0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b
+    s = 0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b
+    l_ = l ** (1 / 3) if l > 0 else 0.0
+    m_ = m ** (1 / 3) if m > 0 else 0.0
+    s_ = s ** (1 / 3) if s > 0 else 0.0
+    L = 0.2104542553 * l_ + 0.7936177850 * m_ - 0.0040720468 * s_
+    A = 1.9779984951 * l_ - 2.4285922050 * m_ + 0.4505937099 * s_
+    B = 0.0259040371 * l_ + 0.7827717662 * m_ - 0.8086757660 * s_
+    return L, A, B
+
+
+def oklab_to_srgb(L, A, B):
+    l_ = L + 0.3963377774 * A + 0.2158037573 * B
+    m_ = L - 0.1055613458 * A - 0.0638541728 * B
+    s_ = L - 0.0894841775 * A - 1.2914855480 * B
+
+    def cube(v):
+        return v * v * v if v > 0 else 0.0
+
+    l, m, s = cube(l_), cube(m_), cube(s_)
+    r = 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s
+    g = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s
+    b = -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s
+    return (
+        _linear_to_srgb_channel(r),
+        _linear_to_srgb_channel(g),
+        _linear_to_srgb_channel(b),
+    )
+
+
+def rgb_to_hex(rgb):
+    return "#{:02X}{:02X}{:02X}".format(*(int(c) for c in rgb))
+
+
+def parse_hex_color(value):
+    """Accept #RGB, #RRGGBB, or auto. Anything else is a spec error."""
+    text = str(value).strip()
+    if text.lower() == "auto":
+        return None
+    if text.startswith("#"):
+        text = text[1:]
+    if len(text) == 3 and all(c in "0123456789abcdefABCDEF" for c in text):
+        text = "".join(c * 2 for c in text)
+    if len(text) == 8 and all(c in "0123456789abcdefABCDEF" for c in text):
+        text = text[:6]
+    if len(text) != 6 or any(c not in "0123456789abcdefABCDEF" for c in text):
+        raise SpecError(f"revenue color must be auto or #RRGGBB, not {value!r}")
+    return (int(text[0:2], 16), int(text[2:4], 16), int(text[4:6], 16))
+
+
+def _near_white(rgb):
+    L, A, B = srgb_to_oklab(rgb)
+    return L >= NEAR_WHITE_L and math.hypot(A, B) < NEAR_WHITE_CHROMA
+
+
+def _separated(rgb):
+    return (
+        ciede2000_rgb(rgb, _COST_RGB) >= MIN_DELTA_E
+        and ciede2000_rgb(rgb, _PROFIT_RGB) >= MIN_DELTA_E
+        and contrast_ratio(rgb) >= MIN_CONTRAST
+    )
+
+
+def _darken_for_contrast(rgb):
+    """Nudge a dark, low-contrast color down in OKLab until it reads on the background."""
+    L, A, B = srgb_to_oklab(rgb)
+    best = rgb
+    for step in range(0, 40):
+        cand = oklab_to_srgb(max(0.05, L - step * 0.03), A, B)
+        best = cand
+        if contrast_ratio(cand) >= MIN_CONTRAST:
+            return cand
+    return best
+
+
+def _shift_off_reserved(rgb):
+    """Move in OKLab, preferring a darker version of the same hue, until both reserved colors are far enough."""
+    if _separated(rgb):
+        return rgb
+    L, A, B = srgb_to_oklab(rgb)
+    chroma = math.hypot(A, B)
+    hue = math.atan2(B, A)
+    best = None
+    best_de = 1e9
+    for step in range(0, 36):
+        for scale in (1.0, 1.25, 1.55, 1.85, 0.75):
+            for dh in (0, 12, -12, 22, -22, 35, -35):
+                L2 = max(0.12, min(0.72, L - step * 0.02))
+                C2 = max(chroma, 0.04) * scale
+                h2 = hue + math.radians(dh)
+                cand = oklab_to_srgb(L2, C2 * math.cos(h2), C2 * math.sin(h2))
+                if not _separated(cand):
+                    continue
+                de = ciede2000_rgb(cand, rgb)
+                if de < best_de:
+                    best_de = de
+                    best = cand
+    return best if best is not None else _NAVY_RGB
+
+
+def resolve_revenue_color(detected_rgb, explicit=None):
+    """Pick the revenue node and label color.
+
+    `explicit` is an #RRGGBB (or None / "auto") and wins unchanged, including
+    when it matches the cost red. Otherwise a detected logo color is used when
+    it stays readable and clear of the cost red and profit green. No logo, or
+    a white or near-white logo, stays navy.
+    """
+    detected_hex = rgb_to_hex(detected_rgb) if detected_rgb is not None else None
+    if explicit not in (None, "", "auto"):
+        rgb = parse_hex_color(explicit)
+        return {
+            "detected": detected_hex,
+            "final": rgb_to_hex(rgb),
+            "source": "explicit",
+            "reason": "revenue_color override",
+        }
+    if detected_rgb is None:
+        return {
+            "detected": None,
+            "final": NAVY,
+            "source": "navy",
+            "reason": "no logo; revenue stays navy",
+        }
+    if _near_white(detected_rgb) or (
+        relative_luminance(detected_rgb) > relative_luminance(_BG_RGB) and contrast_ratio(detected_rgb) < MIN_CONTRAST
+    ):
+        return {
+            "detected": detected_hex,
+            "final": NAVY,
+            "source": "navy",
+            "reason": "logo color is white or near-white on the chart background",
+        }
+    adjusted = detected_rgb
+    reason = "taken from the logo"
+    source = "logo"
+    if contrast_ratio(adjusted) < MIN_CONTRAST:
+        adjusted = _darken_for_contrast(adjusted)
+        source = "shifted"
+        reason = "logo color was too close to the background and was darkened"
+    if not _separated(adjusted):
+        shifted = _shift_off_reserved(adjusted)
+        if shifted != adjusted:
+            adjusted = shifted
+            source = "shifted"
+            reason = (
+                f"logo color was within CIEDE2000 {MIN_DELTA_E:g} of the cost red or the profit green "
+                "and was shifted, keeping the same hue family where possible"
+            )
+    return {
+        "detected": detected_hex,
+        "final": rgb_to_hex(adjusted),
+        "source": source,
+        "reason": reason,
+    }
+
+
+def dominant_opaque_color(rgba):
+    """Mode of the opaque pixels, ignoring transparency and near-background ink.
+
+    `rgba` is an HxWx4 uint8 array. Antialiased fringes (alpha under 200) are
+    left out so a black wordmark stays black. Returns an (r, g, b) tuple or None.
+    """
+    import numpy as np
+    array = np.asarray(rgba)
+    if array.ndim != 3 or array.shape[2] < 4:
+        raise SpecError("logo image has no alpha channel to sample")
+    rgb = array[..., :3].astype(np.int16)
+    alpha = array[..., 3]
+    opaque = alpha >= 200
+    bg = np.array(_BG_RGB, dtype=np.int16)
+    away = np.max(np.abs(rgb - bg), axis=2) > 18
+    keep = opaque & away
+    if not np.any(keep):
+        keep = opaque
+    if not np.any(keep):
+        return None
+    pixels = rgb[keep]
+    bins = (pixels // 8).astype(np.int32)
+    keys = bins[:, 0] * 32 * 32 + bins[:, 1] * 32 + bins[:, 2]
+    order = np.argsort(keys)
+    keys = keys[order]
+    pixels = pixels[order]
+    best_count = -1
+    best = None
+    start = 0
+    for index in range(1, len(keys) + 1):
+        if index == len(keys) or keys[index] != keys[start]:
+            count = index - start
+            if count > best_count:
+                best_count = count
+                block = pixels[start:index].astype(np.int32)
+                best = tuple(int(round(float(v))) for v in block.mean(axis=0))
+            start = index
+    return best
 
 
 def matplotlib_available():
@@ -471,7 +784,7 @@ def normalize(raw):
         "net_profit": ni,
         "notes": notes,
     }
-    for key in ("byline_icon", "logo", "logo_width"):
+    for key in ("byline_icon", "logo", "logo_width", "revenue_color"):
         if raw.get(key) not in (None, ""):
             spec[key] = raw[key]
     return spec
@@ -505,6 +818,8 @@ def parse_csv(text):
             raw["byline_icon"] = label
         elif section == "logo":
             raw["logo"] = label
+        elif section == "revenue_color":
+            raw["revenue_color"] = label
         elif section == "currency":
             raw["currency"] = label
         elif section == "unit":
@@ -565,7 +880,7 @@ def dump_spec(spec):
     return json.dumps(spec, indent=2, ensure_ascii=False) + "\n"
 
 
-def apply_overrides(spec, *, title=None, byline=None, byline_color=None, footer=None):
+def apply_overrides(spec, *, title=None, byline=None, byline_color=None, footer=None, revenue_color=None):
     """CLI flags win over the file. `footer` replaces the spec footer when non-empty."""
     out = json.loads(json.dumps(spec))
     if title:
@@ -574,6 +889,8 @@ def apply_overrides(spec, *, title=None, byline=None, byline_color=None, footer=
         out["byline"] = byline.strip() or None
     if byline_color:
         out["byline_color"] = byline_color
+    if revenue_color:
+        out["revenue_color"] = revenue_color
     if footer:
         out["footer"] = [str(line) for line in footer if str(line).strip()]
         if out.get("draft") and not any("not investment advice" in line.lower() for line in out["footer"]):
@@ -1086,13 +1403,6 @@ def render_chart(spec, out_path, *, svg_path=None, width=1280, height=720, dpi=1
             closed=True, color=color, alpha=alpha, lw=0, zorder=1,
         ))
 
-    _draw_header(ax, spec, lay, fonts, txt, byline_icon)
-    if lay["positive"]:
-        _draw_positive(ax, spec, lay, labels, txt, node, ribbon)
-    else:
-        _draw_signed(ax, spec, lay, labels, txt, node, ribbon)
-    _draw_footer(spec, lay, fonts, txt)
-
     icon_path = byline_icon or spec.get("byline_icon")
     logo_path = logo or spec.get("logo")
     if logo_width is None:
@@ -1100,8 +1410,28 @@ def render_chart(spec, out_path, *, svg_path=None, width=1280, height=720, dpi=1
     if logo_width is None:
         logo_width = 320.0 * lay["sx"]
     logo_path = str(logo_path) if logo_path else None
-    if logo_path:
-        _place_logo(fig, ax, logo_path, float(logo_width), lay)
+    logo_image = _open_image(logo_path) if logo_path else None
+    detected = dominant_opaque_color(np.array(logo_image)) if logo_image is not None else None
+    try:
+        color_report = resolve_revenue_color(detected, explicit=spec.get("revenue_color"))
+    except SpecError:
+        plt.close(fig)
+        raise
+    revenue_color = color_report["final"]
+    if color_report["source"] != "navy" or color_report["detected"]:
+        notes.append(
+            f"Revenue color {color_report['final']} ({color_report['source']}: {color_report['reason']})."
+            + (f" Detected {color_report['detected']}." if color_report["detected"] else "")
+        )
+
+    _draw_header(ax, spec, lay, fonts, txt, byline_icon)
+    if lay["positive"]:
+        _draw_positive(ax, spec, lay, labels, txt, node, ribbon, revenue_color)
+    else:
+        _draw_signed(ax, spec, lay, labels, txt, node, ribbon, revenue_color)
+    _draw_footer(spec, lay, fonts, txt)
+    if logo_image is not None:
+        _place_logo(fig, ax, logo_path, float(logo_width), lay, image=logo_image)
 
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1126,6 +1456,11 @@ def render_chart(spec, out_path, *, svg_path=None, width=1280, height=720, dpi=1
         "font": fonts["name"],
         "draft": bool(spec.get("draft")),
         "positive_topology": bool(lay["positive"]),
+        "revenue_color": {
+            "detected": color_report["detected"],
+            "final": color_report["final"],
+            "source": color_report["source"],
+        },
         "notes": notes,
     }
 
@@ -1162,7 +1497,7 @@ def _draw_footer(spec, lay, fonts, txt):
         txt(40 * sx, y, line, face, 8, color=MUTED)
 
 
-def _draw_positive(ax, spec, lay, labels, txt, node, ribbon):
+def _draw_positive(ax, spec, lay, labels, txt, node, ribbon, revenue_color):
     scale = lay["S"]
     nw = lay["node_w"]
     sx, sy = lay["sx"], lay["sy"]
@@ -1176,7 +1511,7 @@ def _draw_positive(ax, spec, lay, labels, txt, node, ribbon):
     gap_oth = lay["gap_oth"]
 
     rev_h = spec["revenue"]["value"] * scale
-    node(x1, revenue_y, rev_h, NAVY)
+    node(x1, revenue_y, rev_h, revenue_color)
     heights = [item["value"] * scale for item in spec["segments"]]
     total = sum(heights) + gap_seg * max(len(heights) - 1, 0)
     seg_y = revenue_y + rev_h / 2.0 - total / 2.0
@@ -1184,10 +1519,10 @@ def _draw_positive(ax, spec, lay, labels, txt, node, ribbon):
     for item, height, label in zip(spec["segments"], heights, labels["segments"]):
         node(x0, seg_y, height, SEG)
         ribbon(x0 + nw, seg_y, height, x1, dest, height, SEG, 0.30)
-        txt(x0 - 10 * sx, seg_y + max(height, 2.5 * sy) / 2.0, label, _semi(), 11.5, ha="right")
+        txt(x0 - 10 * sx, seg_y + max(height, 2.5 * sy) / 2.0, label, _semi(), 11.5, ha="right", color=revenue_color)
         seg_y += height + gap_seg
         dest += height
-    txt(x1 + nw / 2.0, revenue_y - 12 * sy, labels["revenue"], _bold(), 12.5, ha="center", va="bottom")
+    txt(x1 + nw / 2.0, revenue_y - 12 * sy, labels["revenue"], _bold(), 12.5, ha="center", va="bottom", color=revenue_color)
 
     gp_h = spec["gross_profit"]["value"] * scale
     cor_h = spec["cost_of_revenue"]["value"] * scale
@@ -1239,7 +1574,7 @@ def _draw_positive(ax, spec, lay, labels, txt, node, ribbon):
         kid_src += source_h
 
 
-def _draw_signed(ax, spec, lay, labels, txt, node, ribbon):
+def _draw_signed(ax, spec, lay, labels, txt, node, ribbon, revenue_color):
     """Losses and credits. Nodes use absolute height and turn red; ribbons are skipped when a split would cross or go negative."""
     scale = lay["S"]
     nw = lay["node_w"]
@@ -1256,7 +1591,7 @@ def _draw_signed(ax, spec, lay, labels, txt, node, ribbon):
     ni = spec["net_profit"]["value"]
 
     rev_h = abs(rev) * scale
-    node(x1, revenue_y, rev_h, NAVY if rev >= 0 else RED)
+    node(x1, revenue_y, rev_h, revenue_color if rev >= 0 else RED)
     heights = [abs(item["value"]) * scale for item in spec["segments"]]
     total = sum(heights) + lay["gap_seg"] * max(len(heights) - 1, 0)
     seg_y = revenue_y + rev_h / 2.0 - total / 2.0
@@ -1265,12 +1600,15 @@ def _draw_signed(ax, spec, lay, labels, txt, node, ribbon):
         color = SEG if item["value"] >= 0 else RED
         node(x0, seg_y, height, color)
         ribbon(x0 + nw, seg_y, height, x1, dest, height, color, 0.30)
-        txt(x0 - 10 * sx, seg_y + max(height, 2.5 * sy) / 2.0, label, _semi(), 11.5, ha="right", color=NAVY if item["value"] >= 0 else RED)
+        txt(
+            x0 - 10 * sx, seg_y + max(height, 2.5 * sy) / 2.0, label, _semi(), 11.5,
+            ha="right", color=revenue_color if item["value"] >= 0 else RED,
+        )
         seg_y += height + lay["gap_seg"]
         dest += height
     txt(
         x1 + nw / 2.0, revenue_y - 12 * sy, labels["revenue"], _bold(), 12.5,
-        ha="center", va="bottom", color=NAVY if rev >= 0 else RED,
+        ha="center", va="bottom", color=revenue_color if rev >= 0 else RED,
     )
 
     gp_h = abs(gp) * scale
@@ -1421,8 +1759,11 @@ def _bbox(mask):
     return int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())
 
 
-def _place_logo(fig, ax, logo_path, logo_w, lay):
-    """Right-align the logo to the chart ink and center it on the title band."""
+def _place_logo(fig, ax, logo_path, logo_w, lay, image=None):
+    """Right-align the logo to the chart ink and center it on the title band.
+
+    The logo is drawn from its own pixels. Nothing recolors or tints it.
+    """
     import numpy as np
     fig.canvas.draw()
     rgba = np.asarray(fig.canvas.buffer_rgba())
@@ -1436,7 +1777,8 @@ def _place_logo(fig, ax, logo_path, logo_w, lay):
     tx0, ty0, tx1, ty1 = _bbox(ink[:title_cut_y, :title_cut_x])
     title_cy = (ty0 + ty1) / 2.0
     _x0, _y0, chart_right, _y1 = _bbox(ink[body_top:body_bot, :])
-    image = _open_image(logo_path)
+    if image is None:
+        image = _open_image(logo_path)
     aspect = image.size[0] / image.size[1]
     fit_w = float(logo_w)
     fit_h = fit_w / aspect

@@ -37,7 +37,7 @@ except ImportError:  # pragma: no cover
     print(json.dumps({"ok": False, "error": "pip install --user requests yfinance"}))
     sys.exit(2)
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 VERSION = __version__
 AV_KEY = os.environ.get("ALPHAVANTAGE_API_KEY", "").strip()
 FH_KEY = os.environ.get("FINNHUB_API_KEY", "").strip()
@@ -2780,6 +2780,7 @@ def cmd_chart_income_sankey(a, R):
         return
     spec = income_sankey.apply_overrides(
         spec, title=a.title, byline=a.byline, byline_color=a.byline_color, footer=a.footer,
+        revenue_color=a.revenue_color,
     )
     R.out["notes"].extend(spec.get("notes") or [])
     if a.spec_out:
@@ -2825,6 +2826,7 @@ def cmd_chart_income_sankey(a, R):
         "draft": result["draft"],
         "spec_out": str(a.spec_out) if a.spec_out else None,
         "positive_topology": result["positive_topology"],
+        "revenue_color": result.get("revenue_color"),
     })
 
 
@@ -2972,6 +2974,7 @@ def main(argv=None):
     ik.add_argument("--byline-color", help="byline text color, e.g. #14213D")
     ik.add_argument("--logo", help="PNG or SVG path for the top-right logo (not bundled)")
     ik.add_argument("--logo-width", type=float, help="logo width in pixels (default 320 on a 1280-wide canvas, scaled with --width)")
+    ik.add_argument("--revenue-color", help="HEX for the revenue node and its labels, or auto (default: match the logo, else navy #14213D)")
     ik.add_argument("--footer", action="append", help="footer line; repeat to replace the spec footer")
     ik.add_argument("--out", default="income-sankey.png", help="PNG path (default income-sankey.png)")
     ik.add_argument("--svg", help="also write an SVG to this path")

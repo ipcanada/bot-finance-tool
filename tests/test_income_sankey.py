@@ -269,9 +269,73 @@ class DraftTests(unittest.TestCase):
         self.assertNotIn("apikey", spec["footer"][1].lower())
 
 
+class RevenueColorTests(unittest.TestCase):
+    def test_ciede2000_reference_pair(self):
+        # Sharma, Wu, Dalal: the published CIEDE2000 pair is about 2.0425.
+        delta = income_sankey.ciede2000((50, 2.6772, -79.7751), (50, 0, -82.7485))
+        self.assertAlmostEqual(delta, 2.0425, places=3)
+        self.assertEqual(income_sankey.ciede2000_rgb((1, 2, 3), (1, 2, 3)), 0)
+
+    def test_no_logo_and_white_logo_stay_navy(self):
+        none = income_sankey.resolve_revenue_color(None)
+        self.assertEqual(none["final"], "#14213D")
+        self.assertIsNone(none["detected"])
+        self.assertEqual(none["source"], "navy")
+        for rgb in ((255, 255, 255), (248, 248, 248), (250, 250, 252)):
+            report = income_sankey.resolve_revenue_color(rgb)
+            self.assertEqual(report["final"], "#14213D", rgb)
+            self.assertEqual(report["detected"], income_sankey.rgb_to_hex(rgb))
+            self.assertEqual(report["source"], "navy")
+
+    def test_near_black_is_kept_when_contrast_holds(self):
+        black = income_sankey.resolve_revenue_color((0, 0, 0))
+        self.assertEqual(black["final"], "#000000")
+        self.assertEqual(black["source"], "logo")
+        dark = income_sankey.resolve_revenue_color((30, 30, 30))
+        self.assertEqual(dark["final"], "#1E1E1E")
+        self.assertGreaterEqual(income_sankey.contrast_ratio((30, 30, 30)), income_sankey.MIN_CONTRAST)
+
+    def test_cost_red_is_shifted_clear_of_cost_and_profit(self):
+        report = income_sankey.resolve_revenue_color((0xD9, 0x53, 0x4F))
+        final = income_sankey.parse_hex_color(report["final"])
+        self.assertEqual(report["source"], "shifted")
+        self.assertNotEqual(report["final"], "#D9534F")
+        self.assertGreaterEqual(
+            income_sankey.ciede2000_rgb(final, (0xD9, 0x53, 0x4F)),
+            income_sankey.MIN_DELTA_E,
+        )
+        self.assertGreaterEqual(
+            income_sankey.ciede2000_rgb(final, (0x2E, 0x9E, 0x5B)),
+            income_sankey.MIN_DELTA_E,
+        )
+        self.assertGreaterEqual(income_sankey.contrast_ratio(final), income_sankey.MIN_CONTRAST)
+
+    def test_explicit_color_wins_even_when_it_matches_cost_red(self):
+        report = income_sankey.resolve_revenue_color((0xD9, 0x53, 0x4F), explicit="#D9534F")
+        self.assertEqual(report["final"], "#D9534F")
+        self.assertEqual(report["source"], "explicit")
+        self.assertEqual(report["detected"], "#D9534F")
+        with self.assertRaises(income_sankey.SpecError):
+            income_sankey.resolve_revenue_color(None, explicit="navy")
+
+    def test_dominant_color_ignores_transparency_and_background(self):
+        try:
+            import numpy as np
+        except ImportError:
+            self.skipTest("numpy not installed")
+        image = np.zeros((12, 12, 4), dtype=np.uint8)
+        image[:, :] = (0xEC, 0xEC, 0xEC, 255)
+        image[2:10, 2:6] = (0, 0, 0, 255)
+        image[2:10, 6:10] = (0, 0, 0, 0)
+        self.assertEqual(income_sankey.dominant_opaque_color(image), (0, 0, 0))
+        white = np.full((4, 4, 4), 255, dtype=np.uint8)
+        self.assertEqual(income_sankey.dominant_opaque_color(white), (255, 255, 255))
+        self.assertEqual(income_sankey.resolve_revenue_color((255, 255, 255))["final"], "#14213D")
+
+
 class CommandTests(unittest.TestCase):
     def test_version_and_doctor_report_charting(self):
-        self.assertEqual(fin.__version__, "1.2.0")
+        self.assertEqual(fin.__version__, "1.3.0")
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             rc = fin.main(["doctor"])
@@ -361,7 +425,10 @@ class RenderTests(unittest.TestCase):
             self.assertLessEqual(gap, 26, f"title-to-byline gap {gap}px")
 
             orange = (np.abs(pixels[..., 0].astype(int) - 255) < 8) & (np.abs(pixels[..., 1].astype(int) - 136) < 12) & (pixels[..., 2] < 30)
-            logo_ys, logo_xs = np.where(orange)
+            # Revenue ink now follows the logo, so measure the wordmark in the header only.
+            header_orange = orange.copy()
+            header_orange[80:] = False
+            logo_ys, logo_xs = np.where(header_orange)
             self.assertGreater(len(logo_xs), 100)
             logo_right = int(logo_xs.max())
             logo_cy = (int(logo_ys.min()) + int(logo_ys.max())) / 2
@@ -413,6 +480,50 @@ class RenderTests(unittest.TestCase):
             pixels = np.array(Image.open(out).convert("RGBA"))
             red = (pixels[..., 0] > 180) & (pixels[..., 1] < 120) & (pixels[..., 2] < 120)
             self.assertGreater(int(red.sum()), 200)
+
+    def test_explicit_flag_wins_and_logo_pixels_stay(self):
+        import numpy as np
+        from PIL import Image
+
+        spec = income_sankey.load_spec(EXAMPLE_JSON)
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            logo = tmp / "logo.png"
+            out = tmp / "chart.png"
+            image = Image.new("RGBA", (200, 40), (0, 0, 0, 255))
+            draw = np.array(image)
+            draw[:, :100] = (180, 20, 40, 255)
+            draw[:, 100:] = (10, 40, 160, 255)
+            Image.fromarray(draw).save(logo)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = fin.main([
+                    "chart", "income-sankey",
+                    "--spec", str(EXAMPLE_JSON),
+                    "--logo", str(logo),
+                    "--logo-width", "200",
+                    "--revenue-color", "#112233",
+                    "--out", str(out),
+                ])
+            payload = json.loads(buf.getvalue())
+            self.assertEqual(rc, 0, buf.getvalue())
+            colors = payload["data"]["revenue_color"]
+            self.assertEqual(colors["final"], "#112233")
+            self.assertEqual(colors["source"], "explicit")
+            self.assertIn("detected", colors)
+            auto = income_sankey.render_chart(spec, tmp / "auto.png", logo=logo, logo_width=200)
+            final = income_sankey.parse_hex_color(auto["revenue_color"]["final"])
+            detected = income_sankey.parse_hex_color(auto["revenue_color"]["detected"])
+            self.assertGreaterEqual(income_sankey.ciede2000_rgb(final, (0xD9, 0x53, 0x4F)), income_sankey.MIN_DELTA_E)
+            self.assertGreaterEqual(income_sankey.ciede2000_rgb(final, (0x2E, 0x9E, 0x5B)), income_sankey.MIN_DELTA_E)
+            pixels = np.array(Image.open(tmp / "auto.png").convert("RGBA"))
+            header = np.zeros(pixels.shape[:2], dtype=bool)
+            header[:80] = True
+            left = header & (pixels[..., 0] == 180) & (pixels[..., 1] == 20) & (pixels[..., 2] == 40)
+            right = header & (pixels[..., 0] == 10) & (pixels[..., 1] == 40) & (pixels[..., 2] == 160)
+            self.assertGreater(int(left.sum()), 400, "left logo color was recolored")
+            self.assertGreater(int(right.sum()), 400, "right logo color was recolored")
+            self.assertIn(detected, ((180, 20, 40), (10, 40, 160)))
 
 
 if __name__ == "__main__":

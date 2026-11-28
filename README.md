@@ -137,6 +137,7 @@ python3 fin.py chart income-sankey \
   --byline-icon /path/to/icon.png \
   --logo /path/to/logo.svg \
   --logo-width 320 \
+  --revenue-color auto \
   --out chart.png \
   --svg chart.svg
 ```
@@ -145,7 +146,9 @@ The spec is JSON or CSV. JSON is the shape in `examples/spacex-q3-2026-income-sa
 
 Y/Y and margin annotations are computed from `value` and `prior` unless the spec sets them. A prior that is missing, zero, or negative does not produce a growth rate. Losses are drawn in red; the chart does not invent a ribbon through a negative remainder.
 
-`--title`, `--byline`, `--byline-icon`, `--byline-color`, `--logo`, `--logo-width`, `--footer` (repeatable), `--width`, `--height`, and `--dpi` override the spec. The logo keeps its aspect ratio. Its right edge lines up with the right-most chart ink and it is centered on the title. The byline sits about 23px under the title. Pass your own icon and logo paths; this repo does not ship company marks. Open Sans is bundled under `fonts/` with its SIL Open Font License (`fonts/OFL.txt`). If those files are missing, the chart uses DejaVu Sans.
+`--title`, `--byline`, `--byline-icon`, `--byline-color`, `--logo`, `--logo-width`, `--revenue-color`, `--footer` (repeatable), `--width`, `--height`, and `--dpi` override the spec. The logo keeps its aspect ratio and its own colors: the file is drawn as supplied, with no recoloring. Its right edge lines up with the right-most chart ink and it is centered on the title. The byline sits about 23px under the title. Pass your own icon and logo paths; this repo does not ship company marks. Open Sans is bundled under `fonts/` with its SIL Open Font License (`fonts/OFL.txt`). If those files are missing, the chart uses DejaVu Sans.
+
+`--revenue-color auto` (the default when a logo is given) sets the revenue node, the revenue label, and the segment labels from the logo. The detector uses the most common opaque pixel, ignoring transparency and pixels near the `#ECECEC` background. White or near-white ink (OKLab L at least 0.90 and chroma under 0.06), and any lighter-than-background color with contrast under 3:1, falls back to navy `#14213D`. Near-black is kept when that contrast holds, and darkened when it does not. A result within CIEDE2000 18 of the cost red `#D9534F` or the profit green `#2E9E5B` is shifted away, preferring a darker shade of the same hue. `--revenue-color '#112233'` or a spec `revenue_color` field uses that hex as-is. The JSON `revenue_color` object has `detected`, `final`, and `source` (`logo`, `navy`, `shifted`, or `explicit`). Segment nodes, the title, and the footer are not recolored.
 
 `--from AAPL --period quarterly` builds a draft spec from the `financials` command and renders it. `--spec-out draft.json` writes that spec. `--no-render` writes the spec and skips matplotlib. The draft is labeled as needing review. Its footer keeps the source name, the source URL, the retrieval time, and the note that aggregator statements are normalized and can differ from as-filed figures. Segment disclosure is not in those statements, so a draft has no segments until you add them.
 

@@ -4,3 +4,8 @@ Copyright 2026 ipcanada
 The companion agent skills were adapted from Anthropic's financial-services
 repository (https://github.com/anthropics/financial-services, Apache-2.0),
 with data sources swapped to fin.py and SEC EDGAR.
+
+The fonts under fonts/ are Open Sans, copyright 2020 The Open Sans Project
+Authors (https://github.com/googlefonts/opensans), licensed under the SIL
+Open Font License 1.1. See fonts/OFL.txt. Those font files are not covered
+by the Apache License.

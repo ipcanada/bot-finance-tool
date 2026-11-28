@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.2.0 — 2026-11-28
+
+### Added
+
+- `chart income-sankey`: draw an income-statement flow (segments, revenue, gross profit and cost of revenue, operating profit and operating expenses, the expense breakdown, other income and tax, net profit) from a CSV or JSON spec. PNG by default, SVG with `--svg`. Title, byline text, byline icon, logo (PNG or SVG), footer, output path, size, and dpi are flags. The SpaceX Q3 2026 spec is `examples/spacex-q3-2026-income-sankey.json` (and the same numbers as CSV). No company figures are hardcoded.
+- `--from TICKER` builds a draft spec from `financials` (Yahoo, Alpha Vantage, or Finnhub). The file is marked draft. The footer keeps the source name, URL, and retrieval time, plus the usual note that aggregator statements are normalized. `--spec-out` writes the spec. `--no-render` skips the drawing step.
+- matplotlib, Pillow, and cairosvg are optional. Other commands do not import them. If matplotlib is missing, the chart command exits 2 and the JSON says `pip install matplotlib`. SVG logos need cairosvg or a PNG. `doctor` reports all three under `charting`.
+- Open Sans (regular, semibold, extra-bold) under `fonts/`, with `fonts/OFL.txt`. Charts fall back to DejaVu Sans when those files are absent.
+- A loss or a credit is drawn in red and does not crash. Ribbon widths use absolute values.
+
+### Limitation
+
+The reference layout is tuned for a profitable statement whose lines tie. A loss still draws, but the ribbons no longer add up through a negative remainder. Draft specs from `financials` are not segment disclosures and are not a substitute for the filing. Logo and byline-icon files are passed in; this repo does not ship company marks.
+
 ## 1.1.0 — 2026-11-28
 
 ### Added

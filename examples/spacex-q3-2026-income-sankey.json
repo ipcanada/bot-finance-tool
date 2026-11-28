@@ -1,0 +1,37 @@
+{
+  "title": "SpaceX Q3 2026 Income Statement",
+  "currency": "USD",
+  "unit": "millions",
+  "byline": "Gordon Gekko",
+  "byline_color": "#A97EFE",
+  "footer": [
+    "Three months ended Sep 30, 2026; US GAAP, unaudited; Y/Y vs. Q3 2025.",
+    "Source: SpaceX (Space Exploration Technologies Corp.) Form 10-Q for the quarter ended Sep 30, 2026, filed Oct 22, 2026.",
+    "Other income, net = interest income $873M + other income, net $1,025M - interest expense $675M. Income tax was a $390M benefit. SI (formerly AI) = SpaceX's third segment. Operating profit = income from operations.",
+    "Draft for review; not investment advice."
+  ],
+  "segments": [
+    {"label": "Space", "value": 1767, "prior": 1666},
+    {"label": "Connectivity", "value": 5248, "prior": 3097},
+    {"label": "SI", "value": 7560, "prior": 813}
+  ],
+  "revenue": {"label": "Revenue", "value": 14575, "prior": 5576},
+  "cost_of_revenue": {"label": "Cost of revenue", "value": 5478, "prior": 2705},
+  "gross_profit": {"label": "Gross profit", "value": 9097, "prior": 2871},
+  "operating_expenses": {
+    "label": "Operating expenses",
+    "value": 6306,
+    "prior": 3144,
+    "children": [
+      {"label": "Research & development", "value": 4596, "prior": 2291},
+      {"label": "SG&A", "value": 1707, "prior": 575},
+      {"label": "Restructuring", "value": 3, "prior": 278}
+    ]
+  },
+  "operating_profit": {"label": "Operating profit", "value": 2791, "prior": -273},
+  "bridges": [
+    {"label": "Other income, net", "value": 1223, "prior": -219, "note": "(see note)"},
+    {"label": "Tax benefit", "value": 390}
+  ],
+  "net_profit": {"label": "Net profit", "value": 4404, "prior": -1054}
+}

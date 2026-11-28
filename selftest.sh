@@ -47,7 +47,7 @@ try:
 except fin.Skip as e:
     assert "sedarplus.ca" in str(e)
 print("offline sedar checks OK", fin.__version__)
-assert fin.__version__ == "1.1.0"
+assert fin.__version__ == "1.2.0"
 PY
 if [ $? -ne 0 ]; then
   echo "offline sedar checks FAIL"
@@ -56,7 +56,7 @@ fi
 python3 - << 'PY'
 import fin, io, json, contextlib, tempfile, os
 from pathlib import Path
-assert fin.__version__ == "1.1.0"
+assert fin.__version__ == "1.2.0"
 assert fin.map_to_yahoo("BRK.B", "")[0] == ["BRK-B"]
 assert fin.map_to_yahoo("BBD.B", ".TO")[0] == ["BBD-B.TO"]
 assert fin.map_to_yahoo("2299955D", ".TO")[0] == []
@@ -94,6 +94,11 @@ print("offline constituent checks OK", fin.__version__)
 PY
 if [ $? -ne 0 ]; then
   echo "offline constituent checks FAIL"
+  exit 1
+fi
+python3 -m unittest tests.test_income_sankey
+if [ $? -ne 0 ]; then
+  echo "income-sankey tests FAIL"
   exit 1
 fi
 python3 fin.py --version

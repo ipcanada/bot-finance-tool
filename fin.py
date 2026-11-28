@@ -16,12 +16,17 @@ CA), then a per-ticker Yahoo earnings-date lookup for names the bulk pass missed
 The Nasdaq.com API is not used. A block page, captcha, HTTP 403, or HTTP 406 stops
 that source. Nothing is retried with a different identity.
 
+`chart income-sankey` draws an income-statement flow from a local CSV or JSON spec.
+matplotlib is optional and imported only for that command. `--from TICKER` builds a
+draft spec from the financials command; the chart footer keeps that source note.
+
 Every command prints one JSON object to stdout:
   {command, symbol, ok, source, source_url, retrieved_at_utc, data, attempts:[...], notes:[...]}
 `attempts` records every source tried, in order, with status ok|skipped|empty|error.
 Exit code 0 when a source answered, 2 when none did. It never raises on a missing key.
 """
 import argparse, csv, datetime as dt, html as htmllib, io, json, math, os, re, sys, threading, time
+import income_sankey
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -32,7 +37,7 @@ except ImportError:  # pragma: no cover
     print(json.dumps({"ok": False, "error": "pip install --user requests yfinance"}))
     sys.exit(2)
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 VERSION = __version__
 AV_KEY = os.environ.get("ALPHAVANTAGE_API_KEY", "").strip()
 FH_KEY = os.environ.get("FINNHUB_API_KEY", "").strip()
@@ -2732,6 +2737,97 @@ def cmd_earnings_calendar(a, R):
             R.out["notes"].append(f"could not write {kind} {dest}: {e}")
 
 
+def cmd_chart_income_sankey(a, R):
+    """Render an income-statement Sankey, or write a draft spec from financials."""
+    if a.from_symbol and a.spec:
+        R.out["attempts"].append({"source": "spec", "status": "error", "message": "pass either --spec or --from, not both"})
+        R.out["notes"].append("pass either --spec or --from, not both")
+        return
+    if not a.from_symbol and not a.spec:
+        R.out["attempts"].append({"source": "spec", "status": "error", "message": "pass --spec PATH or --from TICKER"})
+        R.out["notes"].append("pass --spec PATH or --from TICKER")
+        return
+    try:
+        if a.from_symbol:
+            limit = a.limit or (8 if a.period == "quarterly" else 3)
+            ns = argparse.Namespace(
+                symbol=a.from_symbol, period=a.period, statement="income", limit=limit, source=a.source,
+            )
+            inner = Runner("financials", a.from_symbol)
+            cmd_financials(ns, inner)
+            R.out["attempts"].extend(inner.out["attempts"])
+            R.out["notes"].extend(inner.out.get("notes") or [])
+            if not inner.out["ok"]:
+                R.out["notes"].append("No income statement was returned, so no draft spec was built.")
+                return
+            spec = income_sankey.spec_from_financials(
+                inner.out["data"],
+                symbol=a.from_symbol,
+                period=a.period,
+                source=inner.out.get("source"),
+                source_url=inner.out.get("source_url"),
+                retrieved_at=inner.out.get("retrieved_at_utc"),
+            )
+            R.out["source"] = inner.out.get("source")
+            R.out["source_url"] = inner.out.get("source_url")
+        else:
+            spec = income_sankey.load_spec(a.spec)
+            R.out["source"] = "spec"
+            R.out["source_url"] = str(Path(a.spec))
+    except income_sankey.SpecError as exc:
+        R.out["attempts"].append({"source": "spec", "status": "error", "message": str(exc)})
+        R.out["notes"].append(str(exc))
+        return
+    spec = income_sankey.apply_overrides(
+        spec, title=a.title, byline=a.byline, byline_color=a.byline_color, footer=a.footer,
+    )
+    R.out["notes"].extend(spec.get("notes") or [])
+    if a.spec_out:
+        dest = Path(a.spec_out)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(income_sankey.dump_spec(spec), encoding="utf-8")
+    if a.no_render:
+        R.out.update(ok=True, retrieved_at_utc=now_utc(), data={
+            "draft": bool(spec.get("draft")),
+            "spec_out": str(a.spec_out) if a.spec_out else None,
+            "title": spec.get("title"),
+            "rendered": False,
+        })
+        return
+    if not income_sankey.matplotlib_available():
+        hint = income_sankey.MATPLOTLIB_HINT
+        R.out["attempts"].append({"source": "matplotlib", "status": "skipped", "message": hint})
+        R.out["notes"].append(hint)
+        if a.spec_out:
+            R.out["notes"].append(f"Spec written to {a.spec_out}.")
+        return
+    try:
+        result = income_sankey.render_chart(
+            spec, a.out, svg_path=a.svg, width=a.width, height=a.height, dpi=a.dpi,
+            byline_icon=a.byline_icon, logo=a.logo, logo_width=a.logo_width,
+        )
+    except income_sankey.ChartDependencyError as exc:
+        R.out["attempts"].append({"source": "matplotlib", "status": "skipped", "message": str(exc)})
+        R.out["notes"].append(str(exc))
+        return
+    except income_sankey.SpecError as exc:
+        R.out["attempts"].append({"source": "spec", "status": "error", "message": str(exc)})
+        R.out["notes"].append(str(exc))
+        return
+    R.out["notes"].extend(note for note in result.get("notes") or [] if note not in R.out["notes"])
+    R.out.update(ok=True, retrieved_at_utc=now_utc(), data={
+        "png": result["png"],
+        "svg": result["svg"],
+        "width": result["width"],
+        "height": result["height"],
+        "dpi": result["dpi"],
+        "font": result["font"],
+        "draft": result["draft"],
+        "spec_out": str(a.spec_out) if a.spec_out else None,
+        "positive_topology": result["positive_topology"],
+    })
+
+
 def cmd_doctor(a, R):
     checks = {"version": __version__}
     try:
@@ -2771,6 +2867,7 @@ def cmd_doctor(a, R):
         "verify": "per-ticker yfinance earnings dates for names the bulk pass missed",
         "nasdaq_com": "not used",
     }
+    checks["charting"] = income_sankey.charting_status()
     R.out.update(ok=True, source="local", retrieved_at_utc=now_utc(), data=checks)
 
 
@@ -2850,8 +2947,47 @@ def main(argv=None):
     q.add_argument("--csv", dest="csv_path", help="also write a CSV table to this path")
     q.add_argument("--md", dest="md_path", help="also write a Markdown table to this path")
 
+    chart = sp.add_parser("chart", help="render a chart from a local spec")
+    chart_sp = chart.add_subparsers(dest="chart_kind", required=True)
+    ik = chart_sp.add_parser(
+        "income-sankey",
+        help="income statement as a flow from segments to net profit",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "Render an income-statement Sankey to PNG (and optional SVG) from a CSV or JSON spec.\n"
+            "matplotlib is optional: pip install matplotlib\n"
+            "SVG logos need cairosvg, or pass a PNG. Open Sans is bundled; DejaVu Sans is the fallback.\n\n"
+            "  fin.py chart income-sankey --spec examples/spacex-q3-2026-income-sankey.json --out chart.png\n"
+            "  fin.py chart income-sankey --from AAPL --period quarterly --spec-out aapl.json --out aapl.png"
+        ),
+    )
+    ik.add_argument("--spec", help="CSV or JSON spec (segments, lines, labels, footnotes)")
+    ik.add_argument("--from", dest="from_symbol", help="ticker; build a draft spec from financials (review before relying on it)")
+    ik.add_argument("--period", default="quarterly", choices=["annual", "quarterly"])
+    ik.add_argument("--limit", type=int, help="periods to pull for --from (default 8 quarterly, 3 annual)")
+    ik.add_argument("--source", help="financials source order for --from, same as financials --source")
+    ik.add_argument("--title", help="override the spec title")
+    ik.add_argument("--byline", help="override the byline under the title")
+    ik.add_argument("--byline-icon", help="PNG or SVG path for the byline lockup (not bundled)")
+    ik.add_argument("--byline-color", help="byline text color, e.g. #14213D")
+    ik.add_argument("--logo", help="PNG or SVG path for the top-right logo (not bundled)")
+    ik.add_argument("--logo-width", type=float, help="logo width in pixels (default 320 on a 1280-wide canvas, scaled with --width)")
+    ik.add_argument("--footer", action="append", help="footer line; repeat to replace the spec footer")
+    ik.add_argument("--out", default="income-sankey.png", help="PNG path (default income-sankey.png)")
+    ik.add_argument("--svg", help="also write an SVG to this path")
+    ik.add_argument("--width", type=int, default=1280, help="image width in pixels")
+    ik.add_argument("--height", type=int, default=720, help="image height in pixels")
+    ik.add_argument("--dpi", type=int, default=100, help="PNG/SVG dpi; font size tracks the pixel canvas")
+    ik.add_argument("--spec-out", help="write the resolved spec JSON to this path")
+    ik.add_argument("--no-render", action="store_true", help="only write --spec-out; do not draw (no matplotlib needed)")
+    ik.set_defaults(fn=cmd_chart_income_sankey)
+
     a = p.parse_args(argv)
-    R = Runner(a.cmd, getattr(a, "symbol", None) or getattr(a, "query", None) or getattr(a, "index", None))
+    command = a.cmd
+    if command == "chart":
+        command = f"chart {a.chart_kind}"
+    symbol = getattr(a, "symbol", None) or getattr(a, "query", None) or getattr(a, "index", None) or getattr(a, "from_symbol", None)
+    R = Runner(command, symbol)
     try:
         a.fn(a, R)
     except Exception as e:  # last-resort guard: still emit JSON

@@ -8,13 +8,23 @@ Canadian issuers that are not SEC registrants). SEDAR+ has no public API. This c
 makes one identifiable request and stops if the site returns a block page or captcha.
 It does not bypass either.
 
+`constituents` reads an index registry and resolves members from the registry's
+Wikipedia table, then its fallback (Slickcharts, SPDR holdings XLSX, iShares Canada
+CSV), then a user file. `earnings-calendar` uses Finnhub's earnings calendar when
+FINNHUB_API_KEY is set, otherwise the Yahoo screener via yfinance Calendars (US and
+CA), then a per-ticker Yahoo earnings-date lookup for names the bulk pass missed.
+The Nasdaq.com API is not used. A block page, captcha, HTTP 403, or HTTP 406 stops
+that source. Nothing is retried with a different identity.
+
 Every command prints one JSON object to stdout:
   {command, symbol, ok, source, source_url, retrieved_at_utc, data, attempts:[...], notes:[...]}
 `attempts` records every source tried, in order, with status ok|skipped|empty|error.
 Exit code 0 when a source answered, 2 when none did. It never raises on a missing key.
 """
-import argparse, datetime as dt, html as htmllib, json, math, os, re, sys, time
+import argparse, csv, datetime as dt, html as htmllib, io, json, math, os, re, sys, threading, time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 try:
     import requests
@@ -22,7 +32,7 @@ except ImportError:  # pragma: no cover
     print(json.dumps({"ok": False, "error": "pip install --user requests yfinance"}))
     sys.exit(2)
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 VERSION = __version__
 AV_KEY = os.environ.get("ALPHAVANTAGE_API_KEY", "").strip()
 FH_KEY = os.environ.get("FINNHUB_API_KEY", "").strip()
@@ -1031,6 +1041,1697 @@ def cmd_holders(a, R):
     R.out["notes"].append("Holder data comes from 13F/fund filings with a reporting lag; cite the report date per holder.")
 
 
+# ---------------------------------------------------- index constituents
+# Registry default lives outside the repo (user data). Override with
+# --registry or FIN_INDEX_REGISTRY. examples/index-registry.example.json is
+# a fixture, not the live registry.
+DEFAULT_INDEX_REGISTRY = Path("/home/box/agent-data/finance/index-registry.json")
+EXAMPLE_INDEX_REGISTRY = Path(__file__).resolve().parent / "examples" / "index-registry.example.json"
+ET = ZoneInfo("America/New_York")
+FIN_UA = f"fin.py/{__version__} (https://github.com/ipcanada/bot-finance-tool; research lookup; does not bypass access controls)"
+SCRAPE_MIN_INTERVAL = 1.0  # HTML/file sources only. Tests set this to 0.
+_last_scrape = [0.0]
+_scrape_lock = threading.Lock()
+CONSTITUENTS_TTL_DAYS = 30
+CONSTITUENTS_SHORT_TTL = 7
+CONSTITUENTS_SHORT_TTL_IDS = {"nasdaq-100", "stoxx-europe-600"}
+VERIFY_WORKERS_CAP = 4
+# Compact aliases so `tsx60` and `sp500` resolve to registry ids.
+INDEX_ALIASES = {
+    "sp500": "sp-500", "spx": "sp-500", "gspc": "sp-500",
+    "sp100": "sp-100", "sp400": "sp-midcap-400", "midcap400": "sp-midcap-400",
+    "sp600": "sp-smallcap-600", "sp1500": "sp-1500",
+    "nasdaq100": "nasdaq-100", "ndx": "nasdaq-100",
+    "dow": "djia", "dji": "djia", "dowjones": "djia",
+    "djta": "djta", "djua": "djua",
+    "tsx60": "sp-tsx-60", "tsx60index": "sp-tsx-60", "sptsx60": "sp-tsx-60",
+    "tsxcomposite": "sp-tsx-composite", "sptsxcomposite": "sp-tsx-composite", "tsxcomp": "sp-tsx-composite",
+    "stoxx50": "euro-stoxx-50", "eurostoxx50": "euro-stoxx-50",
+    "stoxx600": "stoxx-europe-600", "stoxxeurope600": "stoxx-europe-600",
+}
+# Exchange prefix or "Main listing" label -> Yahoo suffix. Absent means unmapped.
+# Ambiguous venues (bare "Euronext", "KRX") are omitted on purpose.
+YAHOO_EXCHANGE_SUFFIX = {
+    "nyse": "", "nasdaq": "", "nasdaqgs": "", "nasdaqgm": "", "nasdaqcm": "",
+    "nyse american": "", "nyseamerican": "", "amex": "", "nyse arca": "", "nysearca": "",
+    "lse": ".L", "lon": ".L", "london stock exchange": ".L", "london": ".L",
+    "six": ".SW", "six swiss exchange": ".SW",
+    "nasdaq copenhagen": ".CO", "copenhagen": ".CO", "omxc": ".CO",
+    "tsx": ".TO", "toronto": ".TO", "toronto stock exchange": ".TO", "xtsx": ".TO",
+    "tsxv": ".V", "tsx venture": ".V", "cve": ".V",
+    "fwb": ".DE", "xetra": ".DE", "frankfurt": ".DE", "frankfurt stock exchange": ".DE",
+    "tyo": ".T", "tokyo": ".T", "tokyo stock exchange": ".T",
+    "sehk": ".HK", "hkex": ".HK", "hong kong": ".HK", "hong kong stock exchange": ".HK",
+    "twse": ".TW", "tpe": ".TW", "taiwan": ".TW",
+    "sgx": ".SI", "singapore": ".SI", "singapore exchange": ".SI",
+    "b3": ".SA", "bovespa": ".SA", "sao paulo": ".SA",
+    "bcs": ".SN", "santiago": ".SN", "bolsa de santiago": ".SN",
+    "bmv": ".MX", "mexico": ".MX", "bolsa mexicana de valores": ".MX",
+    "bvc": ".CL", "bolsa de valores de colombia": ".CL",
+    "borsa italiana": ".MI", "bit": ".MI", "milan": ".MI",
+    "bolsa de madrid": ".MC", "bmad": ".MC", "madrid": ".MC",
+    "nasdaq helsinki": ".HE", "helsinki": ".HE",
+    "nasdaq stockholm": ".ST", "stockholm": ".ST",
+    "euronext paris": ".PA", "paris": ".PA",
+    "euronext amsterdam": ".AS", "amsterdam": ".AS",
+    "euronext brussels": ".BR", "brussels": ".BR",
+    "euronext lisbon": ".LS", "lisbon": ".LS",
+    "euronext dublin": ".IR", "dublin": ".IR",
+    "euronext athens": ".AT", "athens": ".AT",
+    "warsaw stock exchange": ".WA", "warsaw": ".WA",
+    "wiener borse": ".VI", "vienna": ".VI",
+    "oslo": ".OL", "oslo bors": ".OL",
+}
+KNOWN_YAHOO_SUFFIXES = {
+    ".TO", ".V", ".NE", ".CN", ".L", ".DE", ".F", ".PA", ".AS", ".MI", ".MC", ".BR",
+    ".HE", ".LS", ".IR", ".SW", ".ST", ".CO", ".OL", ".HK", ".T", ".AX", ".NS", ".BO",
+    ".SA", ".MX", ".SN", ".KS", ".KQ", ".SI", ".TW", ".TWO", ".WA", ".VI", ".AT",
+    ".PR", ".IC", ".SS", ".SZ", ".JO", ".TA", ".CL",
+}
+BLOCK_TITLES = (
+    "just a moment", "access denied", "attention required", "robot check",
+    "pardon our interruption", "verify you are human", "radware block",
+    "blocked", "captcha",
+)
+INTERSTITIAL_MARKERS = (
+    "cf-browser-verification", "captcha.perfdrive.com", "cdn-cgi/challenge-platform",
+    "g-recaptcha", "h-captcha", "please verify you are a human",
+    "enable javascript and cookies to continue", "shieldsquare",
+)
+
+
+def constituent_block_reason(status, body, server_header=""):
+    """Return a stop-message for a block, captcha, 403, or 406. Else None.
+
+    A long article that merely mentions a captcha widget (Wikipedia's edit
+    config does) is not a block. Short interstitials and hard statuses are.
+    """
+    title = _html_title(body)
+    if status in (401, 403, 406, 429):
+        extra = f" ({title})" if title else ""
+        return (
+            f"blocked: HTTP {status}{extra}. fin.py does not bypass captchas or access "
+            "controls, and this source was not retried."
+        )
+    if _looks_like_interstitial(body, title):
+        label = f"HTTP {status} " if status and status != 200 else ""
+        return (
+            f"blocked: {label}captcha or browser-check page{(': ' + title) if title else ''}. "
+            "fin.py does not bypass captchas or access controls, and this source was not retried."
+        )
+    return None
+
+
+def _html_title(body):
+    m = re.search(r"<title[^>]*>(.*?)</title>", body or "", re.I | re.S)
+    if not m:
+        return ""
+    return re.sub(r"\s+", " ", htmllib.unescape(m.group(1))).strip()[:140]
+
+
+def _looks_like_interstitial(body, title=""):
+    if not body:
+        return False
+    title = (title or _html_title(body)).lower()
+    if any(t in title for t in BLOCK_TITLES):
+        return True
+    # Wikipedia articles are large and include an hCaptcha site key in mw.config.
+    if len(body) > 80000:
+        return False
+    low = body.lower()
+    return any(m in low for m in INTERSTITIAL_MARKERS)
+
+
+def scrape_pace():
+    """At most one scraped HTML or holdings-file request per second. No retry loop."""
+    interval = SCRAPE_MIN_INTERVAL
+    if interval <= 0:
+        return
+    with _scrape_lock:
+        wait = interval - (time.time() - _last_scrape[0])
+        if wait > 0:
+            time.sleep(wait)
+        _last_scrape[0] = time.time()
+
+
+def polite_get(url, accept="text/html,application/xhtml+xml,*/*;q=0.8", binary=False):
+    """One identifiable GET. A block, 403, or 406 raises Skip and is not retried."""
+    scrape_pace()
+    try:
+        r = requests.get(url, headers={
+            "User-Agent": FIN_UA,
+            "Accept": accept,
+            "Accept-Language": "en",
+        }, timeout=TIMEOUT)
+    except requests.RequestException as e:
+        raise Skip(f"unreachable: {type(e).__name__}: {str(e)[:160]}")
+    body = ""
+    raw_head = r.content[:400].lstrip().lower()
+    htmlish = raw_head.startswith(b"<!doctype") or raw_head.startswith(b"<html") or raw_head.startswith(b"<head")
+    ctype = (r.headers.get("content-type") or "").lower()
+    if (not binary) or htmlish or r.status_code in (401, 403, 406, 429):
+        if "html" in ctype or "text" in ctype or "json" in ctype or "csv" in ctype or htmlish or r.status_code in (401, 403, 406, 429):
+            try:
+                body = r.text or ""
+            except Exception:
+                body = r.content[:20000].decode("utf-8", "replace")
+    reason = constituent_block_reason(r.status_code, body, r.headers.get("server", ""))
+    if reason:
+        raise Skip(reason + f" URL {url}")
+    if r.status_code != 200:
+        raise Skip(f"HTTP {r.status_code} for {url}")
+    if binary and htmlish:
+        raise Empty(f"expected a data file and received HTML from {url} (not parsed, not retried)")
+    return r
+
+
+def registry_path(explicit=None):
+    if explicit:
+        return Path(explicit)
+    env = os.environ.get("FIN_INDEX_REGISTRY", "").strip()
+    if env:
+        return Path(env)
+    return DEFAULT_INDEX_REGISTRY
+
+
+def load_index_registry(path):
+    path = Path(path)
+    if not path.is_file():
+        hint = f" An example fixture is {EXAMPLE_INDEX_REGISTRY}." if EXAMPLE_INDEX_REGISTRY.is_file() else ""
+        raise Skip(
+            f"index registry not found at {path}. Pass --registry PATH or set FIN_INDEX_REGISTRY "
+            f"(default {DEFAULT_INDEX_REGISTRY}).{hint}"
+        )
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as e:
+        raise Skip(f"could not read index registry {path}: {type(e).__name__}: {e}")
+    if not isinstance(data, dict) or not isinstance(data.get("indices"), list):
+        raise Skip(f"index registry {path} has no indices list")
+    return data
+
+
+def _compact(s):
+    return re.sub(r"[^a-z0-9]", "", (s or "").lower())
+
+
+def resolve_index_entry(registry, token):
+    token = (token or "").strip()
+    if not token:
+        raise Skip("missing index id")
+    key = _compact(token)
+    alias = INDEX_ALIASES.get(key)
+    indices = registry.get("indices") or []
+    by_id = {idx.get("id"): idx for idx in indices if idx.get("id")}
+    if token in by_id:
+        idx = by_id[token]
+    elif alias and alias in by_id:
+        idx = by_id[alias]
+    else:
+        idx = None
+        for item in indices:
+            if key and key in (_compact(item.get("id")), _compact(item.get("name"))):
+                idx = item
+                break
+    if not idx:
+        raise Skip(f"unknown index {token!r}. Use a registry id such as sp-500, sp-tsx-60, or nasdaq-100.")
+    if idx.get("enabled") is False:
+        raise Skip(f"index {idx.get('id')} is disabled in the registry")
+    return idx
+
+
+def cell_str(v):
+    if v is None:
+        return ""
+    try:
+        import pandas as pd
+        if pd.isna(v):
+            return ""
+    except Exception:
+        pass
+    s = str(v).replace("\xa0", " ").replace("\u200b", "").strip()
+    s = re.sub(r"\[\d+\]", "", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def parse_weight(v):
+    s = cell_str(v).replace("%", "").replace(",", "").strip()
+    if not s or s in ("-", "—", "n/a", "na"):
+        return None
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def split_known_suffix(sym):
+    base, suf = split_suffix((sym or "").upper())
+    if suf in KNOWN_YAHOO_SUFFIXES:
+        return base, suf
+    return (sym or "").upper(), ""
+
+
+def apply_yahoo_suffix(local, suffix):
+    """Turn a local code into a Yahoo ticker. None when the form is ambiguous."""
+    local = cell_str(local).upper()
+    if not local or " " in local or "/" in local:
+        return None
+    base, existing = split_known_suffix(local)
+    base = re.sub(r"[^A-Z0-9\-]", "", base.replace(".", "-"))
+    if not base:
+        return None
+    suf = existing or (suffix or "")
+    if suf and not str(suf).startswith("."):
+        suf = "." + str(suf)
+    if suf and suf not in KNOWN_YAHOO_SUFFIXES:
+        return None
+    # Numeric local codes are real on HK/TW/JP/KR/CN. An all-digit fund identifier
+    # on a letter-ticker market (XIU's "2299955D") is not a Yahoo symbol.
+    numeric_markets = {".HK", ".TW", ".TWO", ".T", ".KS", ".KQ", ".SS", ".SZ", ".SI"}
+    if suf in numeric_markets:
+        if not re.fullmatch(r"[A-Z0-9][A-Z0-9\-]{0,8}", base):
+            return None
+    elif not re.fullmatch(r"[A-Z][A-Z0-9]{0,5}(?:-[A-Z0-9]{1,4})?", base):
+        return None
+    return base + (suf or "")
+
+
+def exchange_suffix(label):
+    if not label:
+        return None
+    key = re.sub(r"\s+", " ", label.replace("\xa0", " ")).strip().lower()
+    key = key.replace("ö", "o").replace("é", "e")
+    if key in YAHOO_EXCHANGE_SUFFIX:
+        return YAHOO_EXCHANGE_SUFFIX[key]
+    return None
+
+
+def listing_parts(raw):
+    """Split 'Nasdaq: GOOG; Nasdaq: GOOGL' into (exchange, code) pairs."""
+    text = cell_str(raw)
+    if not text:
+        return []
+    out = []
+    for part in re.split(r"\s*;\s*", text):
+        part = part.strip()
+        if not part:
+            continue
+        m = re.match(r"^([A-Za-z][A-Za-z0-9 .'\-]{0,40}?):\s*(.+)$", part)
+        if m:
+            prefix, code = m.group(1).strip(), m.group(2).strip()
+            # Split only when the left side is an exchange label, not a ticker that happens to contain ":".
+            if exchange_suffix(prefix) is not None or re.fullmatch(r"[A-Za-z][A-Za-z .'\-]{1,30}", prefix):
+                out.append((prefix, code))
+                continue
+        out.append((None, part))
+    return out
+
+
+def map_to_yahoo(raw, suffix_mode, listing=""):
+    """Return (yahoo_symbols, reason). yahoo_symbols is a list; empty means unmapped.
+
+    suffix_mode is a concrete suffix ('', '.TO'), 'per-row', or 'none'.
+    A space inside a local code is left unmapped rather than guessed.
+    """
+    text = cell_str(raw)
+    if not text or text in ("-", "—", "NAN", "NONE"):
+        return [], "empty symbol"
+    parts = listing_parts(text)
+    # A bare ticker that happens to contain a colon-like exchange prefix was split.
+    # A class-share code such as BRK.B has no colon and stays one part.
+    if len(parts) == 1 and parts[0][0] is None:
+        parts = [(None, text)]
+    found = []
+    reasons = []
+    for prefix, code in parts:
+        code = cell_str(code)
+        if not code:
+            reasons.append("empty symbol")
+            continue
+        if prefix:
+            suf = exchange_suffix(prefix)
+            if suf is None:
+                reasons.append(f"unmapped exchange {prefix}")
+                continue
+            if suf == ".HK" and re.fullmatch(r"\d{1,5}", code.replace(" ", "")):
+                code = code.replace(" ", "").zfill(4)
+            yahoo = apply_yahoo_suffix(code, suf)
+            if not yahoo:
+                reasons.append(f"ambiguous symbol {code} on {prefix}")
+                continue
+            found.append(yahoo)
+            continue
+        mode = suffix_mode if suffix_mode is not None else ""
+        if mode == "none":
+            reasons.append("registry yahoo_suffix is none")
+            continue
+        if mode == "per-row":
+            base, existing = split_known_suffix(code.upper())
+            if existing:
+                yahoo = apply_yahoo_suffix(code, "")
+            else:
+                listed = exchange_suffix(listing) if listing else None
+                if listed is None and listing:
+                    reasons.append(f"unmapped listing {listing}")
+                    continue
+                if listed is None and not existing:
+                    reasons.append("no Yahoo suffix on the row (listing/exchange not mapped)")
+                    continue
+                local = code
+                if listed == ".HK" and re.fullmatch(r"\d{1,5}", local.replace(" ", "")):
+                    local = local.replace(" ", "").zfill(4)
+                yahoo = apply_yahoo_suffix(local, listed or "")
+            if not yahoo:
+                reasons.append(f"ambiguous symbol {code}")
+                continue
+            found.append(yahoo)
+            continue
+        # Concrete suffix from the registry, including '' for US listings.
+        local = code
+        if mode == ".HK" and re.fullmatch(r"\d{1,5}", local.replace(" ", "")):
+            local = local.replace(" ", "").zfill(4)
+        yahoo = apply_yahoo_suffix(local, mode)
+        if not yahoo:
+            reasons.append(f"ambiguous symbol {code}")
+            continue
+        found.append(yahoo)
+    # de-dupe, keep order
+    uniq = []
+    for y in found:
+        if y not in uniq:
+            uniq.append(y)
+    return uniq, ("; ".join(reasons) if reasons and not uniq else "")
+
+
+def flatten_columns(df):
+    cols = []
+    for c in df.columns:
+        if isinstance(c, tuple):
+            parts = [cell_str(p) for p in c if cell_str(p) and not str(p).startswith("Unnamed")]
+            c = parts[-1] if parts else ""
+        c = re.sub(r"\[[^\]]*\]", "", cell_str(c))
+        cols.append(re.sub(r"\s+", " ", c).strip())
+    out = df.copy()
+    out.columns = cols
+    return out
+
+
+def find_col(df, name):
+    if not name:
+        return None
+    want = re.sub(r"\s+", " ", str(name)).strip().lower()
+    for c in df.columns:
+        if str(c).strip().lower() == want:
+            return c
+    for c in df.columns:
+        if want and want in str(c).strip().lower():
+            return c
+    return None
+
+
+def _weight_col(df):
+    for cand in ("Weight", "Weight (%)", "Portfolio Weight", "Index Weight", "% Weight", "Weighting"):
+        hit = find_col(df, cand)
+        if hit:
+            return hit
+    return None
+
+
+def rows_from_table(df, spec, suffix_mode):
+    """Parse one table. None if it does not have the requested columns."""
+    df = flatten_columns(df)
+    match = spec.get("table_match")
+    if match and match.lower() not in " ".join(str(c) for c in df.columns).lower():
+        return None
+    sym_col = find_col(df, spec.get("symbol_col") or "Symbol")
+    name_col = find_col(df, spec.get("name_col") or "Company") or find_col(df, "Name") or find_col(df, "Security")
+    if not sym_col or not name_col:
+        return None
+    weight_col = _weight_col(df)
+    listing_col = find_col(df, "Main listing")
+    mapped, unmapped = [], []
+    for _, rec in df.iterrows():
+        raw = cell_str(rec.get(sym_col))
+        name = cell_str(rec.get(name_col))
+        if not raw and not name:
+            continue
+        if raw.lower() in ("symbol", "ticker", "ticker symbol"):
+            continue
+        if not raw:
+            unmapped.append({"symbol": None, "name": name or None, "reason": "empty symbol"})
+            continue
+        listing = cell_str(rec.get(listing_col)) if listing_col else ""
+        weight = parse_weight(rec.get(weight_col)) if weight_col else None
+        yahoos, reason = map_to_yahoo(raw, suffix_mode, listing)
+        if not yahoos:
+            unmapped.append({"symbol": raw, "name": name or None, "reason": reason or "unmapped"})
+            continue
+        # Source symbol is the local code (after an exchange prefix), shared by dual listings.
+        local = raw
+        parts = listing_parts(raw)
+        if len(parts) == 1 and parts[0][0]:
+            local = parts[0][1]
+        elif len(parts) > 1:
+            local = raw
+        for yahoo in yahoos:
+            symbol = local
+            if len(yahoos) > 1:
+                symbol = yahoo
+                for prefix, code in parts:
+                    suf = exchange_suffix(prefix) if prefix else None
+                    local_code = cell_str(code)
+                    if suf == ".HK" and re.fullmatch(r"\d{1,5}", local_code.replace(" ", "")):
+                        local_code = local_code.replace(" ", "").zfill(4)
+                    if apply_yahoo_suffix(local_code, suf or "") == yahoo:
+                        symbol = cell_str(code)
+                        break
+            row = {"symbol": symbol, "yahoo_symbol": yahoo, "name": name or None}
+            if weight is not None:
+                row["weight"] = weight
+            mapped.append(row)
+    if not mapped and not unmapped:
+        return None
+    return mapped, unmapped
+
+
+def parse_html_tables(html, spec, suffix_mode):
+    import pandas as pd
+    try:
+        tables = pd.read_html(io.StringIO(html))
+    except ValueError as e:
+        if "No tables" in str(e) or "No table" in str(e):
+            raise Empty("page has no HTML tables")
+        raise Empty(f"could not read HTML tables: {str(e)[:160]}")
+    except ImportError as e:
+        raise Skip(f"pandas/lxml missing ({e}); pip install --user yfinance")
+    best = None
+    for table in tables:
+        parsed = rows_from_table(table, spec, suffix_mode)
+        if not parsed:
+            continue
+        score = len(parsed[0]) + len(parsed[1])
+        if best is None or score > best[0]:
+            best = (score, parsed)
+    if not best:
+        raise Empty(
+            f"no table with columns {spec.get('symbol_col')!r} and {spec.get('name_col')!r}"
+            + (f" matching {spec.get('table_match')!r}" if spec.get("table_match") else "")
+        )
+    return best[1]
+
+
+def wikipedia_asof(html):
+    m = re.search(
+        r"This page was last edited on\s+(\d{1,2}\s+[A-Za-z]+\s+\d{4})(?:,\s+at\s+(\d{1,2}:\d{2}))?",
+        html or "",
+    )
+    if not m:
+        return None
+    try:
+        day = dt.datetime.strptime(m.group(1), "%d %B %Y").date()
+    except ValueError:
+        return None
+    if m.group(2):
+        hh, mm = m.group(2).split(":")
+        return dt.datetime(day.year, day.month, day.day, int(hh), int(mm), tzinfo=dt.timezone.utc).isoformat()
+    return day.isoformat()
+
+
+def parse_ishares_csv(text, spec, suffix_mode):
+    text = (text or "").lstrip("\ufeff")
+    asof = None
+    m = re.search(r"as of[,\"\s]*([A-Za-z]+\s+\d{1,2},\s+\d{4})", text, re.I)
+    if m:
+        try:
+            asof = dt.datetime.strptime(m.group(1), "%b %d, %Y").date().isoformat()
+        except ValueError:
+            asof = None
+    lines = text.splitlines()
+    header_i = None
+    for i, line in enumerate(lines):
+        if line.lower().startswith("ticker,"):
+            header_i = i
+            break
+    if header_i is None:
+        raise Empty("iShares CSV has no Ticker header (layout changed)")
+    reader = csv.DictReader(io.StringIO("\n".join(lines[header_i:])))
+    mapped, unmapped = [], []
+    for rec in reader:
+        if not rec:
+            continue
+        raw = cell_str(rec.get("Ticker") or rec.get("Symbol"))
+        name = cell_str(rec.get("Name") or rec.get("Issuer Name") or "")
+        asset = cell_str(rec.get("Asset Class") or "")
+        if asset and asset.lower() not in ("equity", "equities"):
+            continue
+        if not raw or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.\-]{0,14}", raw):
+            continue
+        weight = parse_weight(rec.get("Weight (%)") or rec.get("Weight"))
+        yahoos, reason = map_to_yahoo(raw, suffix_mode, "")
+        if not yahoos:
+            unmapped.append({"symbol": raw, "name": name or None, "reason": reason or "unmapped"})
+            continue
+        row = {"symbol": raw, "yahoo_symbol": yahoos[0], "name": name or None}
+        if weight is not None:
+            row["weight"] = weight
+        mapped.append(row)
+    if not mapped:
+        raise Empty("iShares CSV had no equity rows")
+    return (mapped, unmapped), asof
+
+
+def parse_spdr_xlsx(content, spec, suffix_mode):
+    try:
+        import openpyxl
+    except ImportError:
+        raise Skip("openpyxl is not installed; SPDR XLSX needs it (pip install openpyxl). This source was skipped.")
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+    except Exception as e:
+        raise Empty(f"could not read SPDR workbook: {type(e).__name__}: {str(e)[:160]}")
+    mapped, unmapped = [], []
+    asof = None
+    try:
+        ws = wb.worksheets[0]
+        header = None
+        for row in ws.iter_rows(values_only=True):
+            vals = [cell_str(c) for c in row]
+            if asof is None:
+                for v in vals:
+                    m = re.search(r"As of\s+(\d{1,2}-[A-Za-z]{3}-\d{4})", v, re.I)
+                    if m:
+                        try:
+                            asof = dt.datetime.strptime(m.group(1), "%d-%b-%Y").date().isoformat()
+                        except ValueError:
+                            pass
+            low = [v.lower() for v in vals]
+            if header is None:
+                if "ticker" in low and "name" in low:
+                    header = low
+                continue
+            rec = {header[j]: vals[j] if j < len(vals) else "" for j in range(len(header))}
+            raw = rec.get("ticker", "")
+            name = rec.get("name", "")
+            if name and len(name) > 180:
+                continue
+            if not raw or not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,12}", raw.upper()):
+                continue
+            weight = parse_weight(rec.get("weight"))
+            yahoos, reason = map_to_yahoo(raw, suffix_mode, "")
+            if not yahoos:
+                unmapped.append({"symbol": raw, "name": name or None, "reason": reason or "unmapped"})
+                continue
+            row_out = {"symbol": raw, "yahoo_symbol": yahoos[0], "name": name or None}
+            if weight is not None:
+                row_out["weight"] = weight
+            mapped.append(row_out)
+    finally:
+        wb.close()
+    if not mapped:
+        raise Empty("SPDR workbook had no ticker rows (layout changed)")
+    return (mapped, unmapped), asof
+
+
+def parse_user_holdings(path):
+    """CSV, JSON, or one ticker per line. Symbols are taken as given (Yahoo-style)."""
+    path = Path(path)
+    if not path.is_file():
+        raise Skip(f"constituent file not found: {path}")
+    text = path.read_text(errors="replace")
+    mapped, unmapped = [], []
+
+    def add(raw, name=None, weight=None, yahoo=None):
+        raw = cell_str(raw)
+        if not raw or raw.startswith("#"):
+            return
+        yahoo_sym = cell_str(yahoo) if yahoo else ""
+        if yahoo_sym:
+            mode = "per-row" if split_known_suffix(yahoo_sym.upper())[1] or ":" in yahoo_sym else ""
+            yahoos, reason = map_to_yahoo(yahoo_sym, mode)
+            if not yahoos:
+                yahoos, reason = map_to_yahoo(yahoo_sym, "")
+        else:
+            mode = "per-row" if split_known_suffix(raw.upper())[1] or ":" in raw else ""
+            yahoos, reason = map_to_yahoo(raw, mode)
+            if not yahoos and mode == "per-row":
+                yahoos, reason = map_to_yahoo(raw, "")
+        if not yahoos:
+            unmapped.append({"symbol": raw, "name": name, "reason": reason or "unmapped"})
+            return
+        for y in yahoos:
+            row = {"symbol": raw, "yahoo_symbol": y, "name": name}
+            if weight is not None:
+                row["weight"] = weight
+            mapped.append(row)
+
+    if not text.strip():
+        raise Empty(f"no tickers in {path}")
+    stripped = text.lstrip()
+    if stripped.startswith("{") or stripped.startswith("["):
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError as e:
+            raise Empty(f"constituent JSON could not be parsed: {e}")
+        rows = data.get("constituents") if isinstance(data, dict) else data
+        if not isinstance(rows, list):
+            raise Empty("constituent JSON must be a list, or an object with constituents")
+        for item in rows:
+            if isinstance(item, str):
+                add(item)
+            elif isinstance(item, dict):
+                add(item.get("symbol") or item.get("ticker") or item.get("yahoo_symbol"),
+                    item.get("name") or item.get("company"), parse_weight(item.get("weight")),
+                    item.get("yahoo_symbol"))
+            else:
+                continue
+    elif "," in text.splitlines()[0] and re.search(r"symbol|ticker", text.splitlines()[0], re.I):
+        reader = csv.DictReader(io.StringIO(text))
+        for rec in reader:
+            keys = {k.lower().strip(): v for k, v in rec.items() if k}
+            add(keys.get("symbol") or keys.get("ticker") or keys.get("yahoo_symbol"),
+                keys.get("name") or keys.get("company") or keys.get("security"),
+                parse_weight(keys.get("weight") or keys.get("weight (%)")),
+                keys.get("yahoo_symbol"))
+    else:
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            bits = re.split(r"[\t,]", line, maxsplit=1)
+            add(bits[0], bits[1].strip() if len(bits) > 1 else None)
+    if not mapped:
+        raise Empty(f"no tickers in {path}")
+    asof = dt.datetime.fromtimestamp(path.stat().st_mtime, dt.timezone.utc).date().isoformat()
+    return (mapped, unmapped), asof
+
+
+def _source_kind(spec):
+    t = (spec or {}).get("type") or "none"
+    return {
+        "wikipedia_table": "wikipedia",
+        "slickcharts": "slickcharts",
+        "spdr_xlsx": "spdr",
+        "ishares_csv": "ishares",
+        "file": "file",
+        "composite": "composite",
+        "none": "none",
+    }.get(t, t)
+
+
+def parse_source_arg(source):
+    """Return (kind set or None, file path or None) from --source."""
+    if not source:
+        return None, None
+    kinds, file_path = set(), None
+    for part in str(source).split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if part.lower().startswith("file:"):
+            kinds.add("file")
+            file_path = part.split(":", 1)[1]
+        else:
+            kinds.add(part.lower())
+    return kinds, file_path
+
+
+def _as_source_list(value):
+    if not value:
+        return []
+    if isinstance(value, list):
+        return [v for v in value if isinstance(v, dict)]
+    if isinstance(value, dict):
+        return [value]
+    return []
+
+
+def cache_ttl_days(index_id):
+    return CONSTITUENTS_SHORT_TTL if index_id in CONSTITUENTS_SHORT_TTL_IDS else CONSTITUENTS_TTL_DAYS
+
+
+def constituent_cache_path(index_id):
+    return CACHE / "constituents" / f"{index_id}.json"
+
+
+def read_constituent_cache(index_id):
+    path = constituent_cache_path(index_id)
+    if not path.is_file():
+        return None
+    try:
+        env = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    cached_at = env.get("cached_at")
+    try:
+        stamp = dt.datetime.fromisoformat(cached_at)
+    except (TypeError, ValueError):
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=dt.timezone.utc)
+    age = dt.datetime.now(dt.timezone.utc) - stamp
+    env["_age_days"] = age.total_seconds() / 86400
+    env["_ttl_days"] = env.get("ttl_days") or cache_ttl_days(index_id)
+    env["_stale"] = age.total_seconds() > float(env["_ttl_days"]) * 86400
+    return env
+
+
+def write_constituent_cache(index_id, source, source_url, asof, data):
+    path = constituent_cache_path(index_id)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        env = {
+            "index_id": index_id,
+            "cached_at": now_utc(),
+            "ttl_days": cache_ttl_days(index_id),
+            "source": source,
+            "source_url": source_url,
+            "asof": asof,
+            "data": data,
+        }
+        path.write_text(json.dumps(env))
+    except OSError:
+        pass
+
+
+def _payload(index, mapped, unmapped, asof, source_url, fetched_at=None):
+    notes = []
+    data = {
+        "index_id": index.get("id"),
+        "name": index.get("name"),
+        "count": len(mapped),
+        "unmapped_count": len(unmapped),
+        "asof": asof,
+        "fetched_at_utc": fetched_at or now_utc(),
+        "constituents": mapped,
+        "unmapped": unmapped,
+    }
+    return data, notes
+
+
+def _finish_rows(index, parsed, asof, url, source_name):
+    mapped, unmapped = parsed
+    # Drop exact yahoo duplicates, keep the first.
+    seen, uniq = set(), []
+    for row in mapped:
+        key = row.get("yahoo_symbol")
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(row)
+    if not uniq:
+        sample = ""
+        if unmapped:
+            sample = f"; first: {unmapped[0].get('symbol')} ({unmapped[0].get('reason')})"
+        raise Empty(f"no Yahoo tickers mapped ({len(unmapped)} unmapped){sample}")
+    data, extra_notes = _payload(index, uniq, unmapped, asof, url)
+    if index.get("large"):
+        extra_notes.append(f"large index ({index.get('name')}, about {index.get('approx_size')} names); consider --top N")
+    if source_name in ("wikipedia_table", "slickcharts", "spdr_xlsx", "ishares_csv"):
+        extra_notes.append(
+            "Constituent lists from Wikipedia, Slickcharts, and ETF holdings can lag the official index "
+            "and can include extra names. Confirm membership with the index provider."
+        )
+    if source_name in ("spdr_xlsx", "ishares_csv"):
+        extra_notes.append("ETF holdings are not the official index membership; cash and non-members are dropped when the file labels them.")
+    if unmapped:
+        extra_notes.append(f"{len(unmapped)} row(s) had no Yahoo ticker and were left unmapped (not guessed).")
+    data["_notes"] = extra_notes
+    return data, url
+
+
+def fetch_spec(index, spec, stack):
+    """Fetch one registry source. Returns (data, url). Raises Skip or Empty."""
+    kind = (spec or {}).get("type") or "none"
+    suffix = index.get("yahoo_suffix")
+    if suffix is None:
+        suffix = ""
+    if kind == "none":
+        raise Skip(spec.get("note") or "no constituents source configured")
+    if kind == "composite":
+        return fetch_composite(index, spec, stack)
+    if kind == "wikipedia_table":
+        url = spec.get("url")
+        if not url:
+            raise Skip("wikipedia source has no url")
+        r = polite_get(url)
+        parsed = parse_html_tables(r.text, spec, suffix)
+        asof = wikipedia_asof(r.text) or dt.datetime.now(dt.timezone.utc).date().isoformat()
+        return _finish_rows(index, parsed, asof, url, kind)
+    if kind == "slickcharts":
+        url = spec.get("url")
+        if not url:
+            raise Skip("slickcharts source has no url")
+        r = polite_get(url)
+        parsed = parse_html_tables(r.text, spec, suffix)
+        asof = dt.datetime.now(dt.timezone.utc).date().isoformat()
+        return _finish_rows(index, parsed, asof, url, kind)
+    if kind == "ishares_csv":
+        url = spec.get("url")
+        if not url:
+            raise Skip("ishares source has no url")
+        r = polite_get(url, accept="text/csv,text/plain,*/*;q=0.8")
+        if "html" in (r.headers.get("content-type") or "").lower() and "ticker," not in (r.text or "")[:2000].lower():
+            raise Empty(f"iShares URL returned HTML rather than a CSV ({url}). Not worked around.")
+        parsed, asof = parse_ishares_csv(r.text, spec, suffix)
+        asof = asof or dt.datetime.now(dt.timezone.utc).date().isoformat()
+        return _finish_rows(index, parsed, asof, url, kind)
+    if kind == "spdr_xlsx":
+        url = spec.get("url")
+        if not url:
+            raise Skip("spdr source has no url")
+        r = polite_get(url, accept="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,*/*;q=0.8", binary=True)
+        parsed, asof = parse_spdr_xlsx(r.content, spec, suffix)
+        asof = asof or dt.datetime.now(dt.timezone.utc).date().isoformat()
+        return _finish_rows(index, parsed, asof, url, kind)
+    if kind == "file":
+        path = spec.get("path") or spec.get("url")
+        if not path:
+            raise Skip("pass --file PATH or --source file:PATH")
+        parsed, asof = parse_user_holdings(path)
+        return _finish_rows(index, parsed, asof, f"file://{Path(path).resolve()}", kind)
+    raise Skip(f"unsupported constituents source type {kind}")
+
+
+def fetch_composite(index, spec, stack):
+    ids = spec.get("of") or []
+    if not ids:
+        raise Skip("composite source has no member indices")
+    if index.get("id") in stack:
+        raise Skip(f"composite cycle at {index.get('id')}")
+    registry = spec.get("_registry")
+    if registry is None:
+        raise Skip("composite source is missing the registry")
+    merged = []
+    unmapped = []
+    attempts = []
+    asofs = []
+    urls = []
+    seen = set()
+    for child_id in ids:
+        try:
+            child = resolve_index_entry(registry, child_id)
+        except Skip as e:
+            attempts.append({"source": f"composite:{child_id}", "status": "skipped", "message": str(e)})
+            raise Skip(f"composite member {child_id} failed: {e}")
+        sub = Runner("constituents", child.get("id"))
+        run_constituent_chain(child, registry, selected=None, file_path=None, refresh=True, runner=sub, stack=stack | {index.get("id")})
+        attempts.extend({"source": f"{child.get('id')}:{a.get('source')}", **{k: v for k, v in a.items() if k != "source"}} for a in sub.out["attempts"])
+        if not sub.out["ok"]:
+            raise Empty(f"composite member {child.get('id')} returned no constituents")
+        urls.append(sub.out.get("source_url"))
+        if sub.out["data"].get("asof"):
+            asofs.append(sub.out["data"]["asof"])
+        for row in sub.out["data"].get("constituents") or []:
+            if row.get("yahoo_symbol") in seen:
+                continue
+            seen.add(row.get("yahoo_symbol"))
+            merged.append(row)
+        unmapped.extend(sub.out["data"].get("unmapped") or [])
+    asof = min(asofs) if asofs else None
+    data, url = _finish_rows(index, (merged, unmapped), asof, " + ".join(u for u in urls if u), "composite")
+    data["_child_attempts"] = attempts
+    return data, url
+
+
+def run_constituent_chain(index, registry, selected, file_path, refresh, runner, stack=None):
+    """Try cache, then constituents_source, fallback_source, then a user file."""
+    stack = stack or set()
+    index_id = index.get("id")
+    stash = {}
+    # A --source filter or a user file must not read or replace the default cache.
+    use_cache = selected is None and not file_path
+
+    def cache_fn():
+        if not use_cache:
+            raise Skip("cache is only used for the default source order")
+        if refresh:
+            raise Skip("--refresh")
+        env = read_constituent_cache(index_id)
+        if not env:
+            raise Skip("no cache")
+        if env.get("_stale"):
+            raise Skip(f"stale cache ({env.get('_age_days', 0):.1f}d > ttl {env.get('_ttl_days')}d)")
+        stash["source"] = env.get("source")
+        stash["asof"] = env.get("asof")
+        data = dict(env.get("data") or {})
+        data["cached"] = True
+        data["cached_at"] = env.get("cached_at")
+        return data, env.get("source_url")
+
+    chain = [("cache", cache_fn)]
+    specs = []
+    primary = index.get("constituents_source") or {"type": "none"}
+    specs.append(primary)
+    specs.extend(_as_source_list(index.get("fallback_source")))
+    if file_path:
+        specs.append({"type": "file", "path": file_path})
+    for spec in specs:
+        spec = dict(spec)
+        spec["_registry"] = registry
+        kind = _source_kind(spec)
+        label = spec.get("type") or "none"
+        if selected is not None and kind not in selected:
+            runner.out["attempts"].append({"source": label, "status": "skipped", "message": "not selected"})
+            continue
+
+        def fn(spec=spec, label=label):
+            data, url = fetch_spec(index, spec, stack)
+            notes = data.pop("_notes", [])
+            children = data.pop("_child_attempts", None)
+            if children:
+                runner.out["attempts"].extend(children)
+            runner.out["notes"].extend(notes)
+            stash["asof"] = data.get("asof")
+            return data, url
+
+        chain.append((label, fn))
+    ok = runner.try_sources(chain)
+    if ok and runner.out["source"] == "cache":
+        runner.out["source"] = stash.get("source") or "cache"
+        runner.out["asof"] = (runner.out["data"] or {}).get("asof") or stash.get("asof")
+        runner.out["notes"].append("Served from the constituents cache. Pass --refresh to fetch again.")
+    elif ok and use_cache:
+        runner.out["asof"] = (runner.out["data"] or {}).get("asof")
+        write_constituent_cache(index_id, runner.out["source"], runner.out["source_url"], runner.out["asof"], runner.out["data"])
+    elif ok:
+        runner.out["asof"] = (runner.out["data"] or {}).get("asof")
+    return ok
+
+
+def rank_constituents(rows, top, notes):
+    if not top or top <= 0 or len(rows) <= top:
+        return rows
+    weighted = [r for r in rows if isinstance(r.get("weight"), (int, float))]
+    if weighted and len(weighted) == len(rows):
+        notes.append(f"--top {top} ranked by weight")
+        return sorted(rows, key=lambda r: r["weight"], reverse=True)[:top]
+    notes.append(f"--top {top} ranked by Yahoo market cap (the list has no weights)")
+    caps = {}
+
+    def one(sym):
+        try:
+            cap = getattr(yf_ticker(sym).fast_info, "market_cap", None)
+            return sym, float(cap) if cap else 0.0
+        except Exception:
+            return sym, 0.0
+
+    syms = [r.get("yahoo_symbol") for r in rows if r.get("yahoo_symbol")]
+    with ThreadPoolExecutor(max_workers=VERIFY_WORKERS_CAP) as pool:
+        for sym, cap in pool.map(one, syms):
+            caps[sym] = cap
+    return sorted(rows, key=lambda r: caps.get(r.get("yahoo_symbol")) or 0.0, reverse=True)[:top]
+
+
+def cmd_constituents(a, R):
+    selected, source_file = parse_source_arg(getattr(a, "source", None))
+    file_path = getattr(a, "file", None) or source_file
+    try:
+        registry = load_index_registry(registry_path(getattr(a, "registry", None)))
+        index = resolve_index_entry(registry, a.symbol)
+    except Skip as e:
+        R.out["attempts"].append({"source": "registry", "status": "skipped", "message": str(e)})
+        return
+    R.out["symbol"] = index.get("id")
+    R.out["notes"].append(f"registry {registry_path(getattr(a, 'registry', None))}")
+    if _compact(a.symbol) != _compact(index.get("id")) and a.symbol != index.get("id"):
+        R.out["notes"].append(f"resolved {a.symbol!r} to {index.get('id')}")
+    run_constituent_chain(index, registry, selected, file_path, bool(getattr(a, "refresh", False)), R)
+    if R.out["ok"] and R.out.get("source") in ("wikipedia_table", "slickcharts", "spdr_xlsx", "ishares_csv"):
+        lag = ("Constituent lists from Wikipedia, Slickcharts, and ETF holdings can lag the official index "
+               "and can include extra names. Confirm membership with the index provider.")
+        if lag not in R.out["notes"]:
+            R.out["notes"].append(lag)
+    if R.out["ok"] and index.get("large") and not any(str(n).startswith("large index") for n in R.out["notes"]):
+        R.out["notes"].append(f"large index ({index.get('name')}, about {index.get('approx_size')} names); consider --top N")
+    if R.out["ok"] and getattr(a, "top", None):
+        rows = rank_constituents(R.out["data"].get("constituents") or [], a.top, R.out["notes"])
+        R.out["data"]["constituents"] = rows
+        R.out["data"]["count"] = len(rows)
+        R.out["data"]["top"] = a.top
+
+
+# ---------------------------------------------------- earnings calendar
+def parse_ymd(value, flag):
+    try:
+        return dt.date.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        raise Skip(f"{flag} must be YYYY-MM-DD, got {value!r}")
+
+
+def symkey(symbol):
+    return re.sub(r"[^A-Z0-9\-]", "", (symbol or "").upper().replace(".", "-"))
+
+
+def norm_timing(value, when=None):
+    """Map provider timing to BMO, AMC, intraday, or unknown."""
+    text = cell_str(value).lower().replace("_", " ")
+    if text in ("bmo", "before market open", "pre-market", "premarket", "before open"):
+        return "BMO"
+    if text in ("amc", "after market close", "after-hours", "after hours", "afterhours", "after close"):
+        return "AMC"
+    if text in ("dmh", "intraday", "during market", "during market hours"):
+        return "intraday"
+    if text in ("n/a", "na", "none", "unknown", "--", "time not supplied", "tns"):
+        return "unknown"
+    if when is not None:
+        hour, minute = when.hour, when.minute
+        if hour == 0 and minute == 0:
+            return "unknown"
+        if hour < 12:
+            return "BMO"
+        if hour >= 16:
+            return "AMC"
+        return "intraday"
+    return "unknown"
+
+
+def _as_et(value):
+    if value is None:
+        return None
+    try:
+        import pandas as pd
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+    if hasattr(value, "to_pydatetime"):
+        value = value.to_pydatetime()
+    if isinstance(value, dt.datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=dt.timezone.utc)
+        return value.astimezone(ET)
+    if isinstance(value, dt.date):
+        return dt.datetime(value.year, value.month, value.day, tzinfo=ET)
+    text = str(value).strip()
+    if not text or text.lower() == "nat":
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            parsed = dt.datetime.strptime(text[:10], "%Y-%m-%d").replace(tzinfo=ET)
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    return parsed.astimezone(ET)
+
+
+def _num(value):
+    try:
+        import pandas as pd
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+    if value is None or value == "":
+        return None
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(n) or math.isinf(n):
+        return None
+    return n
+
+
+def yahoo_calendar_status():
+    try:
+        import yfinance
+    except ImportError:
+        return {"lib": "MISSING: pip install --user yfinance", "calendars": False}
+    raw = str(getattr(yfinance, "__version__", "0"))
+    parts = []
+    for p in raw.split(".")[:3]:
+        try:
+            parts.append(int(p))
+        except ValueError:
+            parts.append(0)
+    while len(parts) < 2:
+        parts.append(0)
+    ok = tuple(parts[:2]) >= (1, 8)
+    has = False
+    try:
+        from yfinance.calendars import Calendars
+        has = hasattr(Calendars, "get_earnings_calendar")
+    except Exception as e:
+        return {"lib": f"yfinance {raw}", "calendars": False, "detail": str(e)[:160]}
+    return {
+        "lib": f"yfinance {raw}",
+        "calendars": bool(ok and has),
+        "needs": "yfinance>=1.8" if not ok else None,
+        "regions": "us via Calendars.get_earnings_calendar; other regions via Calendars._get_data",
+    }
+
+
+def _frame_records(df):
+    if df is None or getattr(df, "empty", True):
+        return []
+    work = df.reset_index()
+    work.columns = [str(c) for c in work.columns]
+    return work.to_dict(orient="records")
+
+
+def rows_from_yahoo_frame(df, source):
+    rows = []
+    for rec in _frame_records(df):
+        symbol = cell_str(rec.get("Symbol") or rec.get("index"))
+        if not symbol or symbol.lower() == "symbol":
+            continue
+        when = _as_et(rec.get("Event Start Date"))
+        if when is None:
+            continue
+        timing = norm_timing(rec.get("Timing"), when)
+        rows.append({
+            "date": when.date().isoformat(),
+            "time_et": when.strftime("%H:%M"),
+            "timing": timing,
+            "ticker": symbol,
+            "yahoo_symbol": symbol,
+            "symbol": symbol,
+            "company": cell_str(rec.get("Company")) or None,
+            "eps_estimate": _num(rec.get("EPS Estimate")),
+            "marketcap": _num(rec.get("Marketcap")),
+            "source": source,
+            "projected": True,
+        })
+    return rows
+
+
+def yahoo_earnings_calendar(region, start, end):
+    """Page the Yahoo earnings screener. US uses the public method; other regions use _get_data."""
+    status = yahoo_calendar_status()
+    if not status.get("calendars"):
+        raise Skip(f"yfinance Calendars unavailable ({status.get('lib')}). Need yfinance>=1.8.")
+    import yfinance as yf
+    from yfinance.calendars import CalendarQuery
+    # Yahoo treats the end bound as midnight at the start of that date, so a
+    # same-day window drops every print that afternoon. Ask through the next
+    # date, then keep rows whose New York date is inside the caller's range.
+    query_end = end + dt.timedelta(days=1)
+    cal = yf.Calendars(start=start.isoformat(), end=query_end.isoformat())
+    region = region.lower()
+    rows, pages = [], 0
+    offset = 0
+    while pages < 40:
+        try:
+            if region == "us":
+                df = cal.get_earnings_calendar(
+                    start=start.isoformat(), end=query_end.isoformat(),
+                    filter_most_active=False, limit=100, offset=offset, force=True,
+                )
+            else:
+                query = CalendarQuery("and", [
+                    CalendarQuery("eq", ["region", region]),
+                    CalendarQuery("or", [
+                        CalendarQuery("eq", ["eventtype", "EAD"]),
+                        CalendarQuery("eq", ["eventtype", "ERA"]),
+                    ]),
+                    CalendarQuery("gte", ["startdatetime", start.isoformat()]),
+                    CalendarQuery("lte", ["startdatetime", query_end.isoformat()]),
+                ])
+                df = cal._get_data("sp_earnings", query, limit=100, offset=offset, force=True)
+        except Skip:
+            raise
+        except Exception as e:
+            if rows:
+                rows = [r for r in rows if start.isoformat() <= r["date"] <= end.isoformat()]
+                return rows, f"region {region}: {len(rows)} rows in {pages} page(s); paging stopped: {type(e).__name__}: {str(e)[:120]}"
+            raise Skip(f"yfinance Calendars region {region} failed: {type(e).__name__}: {str(e)[:180]}")
+        pages += 1
+        batch = rows_from_yahoo_frame(df, "yahoo_calendar")
+        if not batch:
+            break
+        rows.extend(batch)
+        if len(batch) < 100:
+            break
+        offset += 100
+    rows = [r for r in rows if start.isoformat() <= r["date"] <= end.isoformat()]
+    note = f"region {region}: {len(rows)} rows, {pages} page(s)"
+    if pages >= 40 and len(rows) >= 4000:
+        note += "; stopped at the page cap"
+    return rows, note
+
+
+def finnhub_earnings_calendar(start, end):
+    payload, url = fh("calendar/earnings", **{"from": start.isoformat(), "to": end.isoformat()})
+    rows_in = payload.get("earningsCalendar") if isinstance(payload, dict) else payload
+    if not rows_in:
+        raise Empty("Finnhub earnings calendar was empty")
+    rows = []
+    for rec in rows_in:
+        if not isinstance(rec, dict):
+            continue
+        symbol = cell_str(rec.get("symbol"))
+        date = cell_str(rec.get("date"))[:10]
+        if not symbol or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+            continue
+        hour = cell_str(rec.get("hour"))
+        rows.append({
+            "date": date,
+            "time_et": None,
+            "timing": norm_timing(hour),
+            "ticker": symbol,
+            "yahoo_symbol": symbol,
+            "symbol": symbol,
+            "company": None,
+            "eps_estimate": _num(rec.get("epsEstimate")),
+            "marketcap": None,
+            "source": "finnhub",
+            "projected": False,
+        })
+    if not rows:
+        raise Empty("Finnhub earnings calendar had no dated rows")
+    return rows, url
+
+
+def ticker_earnings_in_window(yahoo, start, end):
+    """One per-ticker Yahoo earnings-date lookup. One retry on a throttle, then stop."""
+    def once():
+        ed = yf_ticker(yahoo).get_earnings_dates(limit=12)
+        if ed is None or getattr(ed, "empty", True):
+            return []
+        out = []
+        work = ed.reset_index()
+        work.columns = [str(c) for c in work.columns]
+        for rec in work.to_dict(orient="records"):
+            when = _as_et(rec.get("Earnings Date") or rec.get("index"))
+            if when is None:
+                continue
+            day = when.date()
+            if day < start or day > end:
+                continue
+            out.append({
+                "date": day.isoformat(),
+                "time_et": when.strftime("%H:%M"),
+                "timing": norm_timing(None, when),
+                "ticker": yahoo,
+                "yahoo_symbol": yahoo,
+                "symbol": yahoo,
+                "company": None,
+                "eps_estimate": _num(rec.get("EPS Estimate")),
+                "marketcap": None,
+                "source": "yahoo_earnings_dates",
+                "projected": True,
+            })
+        return out
+
+    try:
+        return once(), None
+    except Exception as e:
+        if not re.search(r"429|too many requests|rate limit|throttle", str(e), re.I):
+            return [], f"{type(e).__name__}: {str(e)[:160]}"
+        time.sleep(1.0)
+        try:
+            return once(), None
+        except Exception as e2:
+            return [], f"throttle retry failed: {type(e2).__name__}: {str(e2)[:160]}"
+
+
+def _constituent_index(constituents):
+    """Map several symbol spellings to the constituent row."""
+    index = {}
+    for row in constituents:
+        for field in ("yahoo_symbol", "symbol", "ticker"):
+            raw = row.get(field)
+            if not raw:
+                continue
+            index.setdefault(symkey(raw), row)
+    return index
+
+
+def lookup_constituent(index, symbol):
+    if not symbol:
+        return None
+    return index.get(symkey(symbol))
+
+
+def assemble_earnings(constituents, event_rows):
+    """Intersect events with constituents. Returns rows, counts, missing, unmapped."""
+    unmapped = [c for c in constituents if not c.get("yahoo_symbol")]
+    mapped = [c for c in constituents if c.get("yahoo_symbol")]
+    by_symbol = _constituent_index(mapped)
+    kept = {}
+    for event in event_rows:
+        match = lookup_constituent(by_symbol, event.get("yahoo_symbol") or event.get("ticker") or event.get("symbol"))
+        if constituents and not match:
+            continue
+        yahoo = (match or {}).get("yahoo_symbol") or event.get("yahoo_symbol") or event.get("ticker")
+        symbol = (match or {}).get("symbol") or event.get("symbol") or yahoo
+        company = event.get("company") or (match or {}).get("name")
+        row = {
+            "date": event.get("date"),
+            "time_et": event.get("time_et"),
+            "timing": event.get("timing") or "unknown",
+            "ticker": yahoo,
+            "symbol": symbol,
+            "yahoo_symbol": yahoo,
+            "company": company,
+            "eps_estimate": event.get("eps_estimate"),
+            "marketcap": event.get("marketcap"),
+            "source": event.get("source"),
+            "asof": event.get("asof"),
+            "projected": bool(event.get("projected")),
+        }
+        key = (row["date"], symkey(yahoo or ""))
+        prev = kept.get(key)
+        if not prev:
+            kept[key] = row
+            continue
+        if prev.get("eps_estimate") is None and row.get("eps_estimate") is not None:
+            prev["eps_estimate"] = row["eps_estimate"]
+        if prev.get("timing") in (None, "unknown") and row.get("timing") not in (None, "unknown"):
+            prev["timing"] = row["timing"]
+            prev["time_et"] = row.get("time_et") or prev.get("time_et")
+        if not prev.get("company") and row.get("company"):
+            prev["company"] = row["company"]
+        if prev.get("source") != row.get("source") and row.get("source"):
+            prev["source"] = prev["source"]  # keep the earlier pass (bulk before verify)
+    rows = sorted(kept.values(), key=lambda r: (r.get("date") or "", r.get("ticker") or ""))
+    found_keys = {symkey(r.get("yahoo_symbol") or "") for r in rows}
+    missing = []
+    for c in mapped:
+        if symkey(c.get("yahoo_symbol")) not in found_keys:
+            missing.append({"symbol": c.get("symbol"), "yahoo_symbol": c.get("yahoo_symbol"), "name": c.get("name")})
+    counts = {
+        "constituents": len(constituents),
+        "found": len({symkey(r.get("yahoo_symbol") or "") for r in rows}) if constituents else len(rows),
+        "no_date": len(missing) if constituents else 0,
+        "unmapped": len(unmapped),
+        "in_window": len({symkey(r.get("yahoo_symbol") or "") for r in rows}) if constituents else len(rows),
+        "missing": len(missing) if constituents else 0,
+        "events": len(rows),
+    }
+    return rows, counts, missing, unmapped
+
+
+def regions_for(index, explicit, constituents):
+    if explicit:
+        return [p.strip().lower() for p in explicit.split(",") if p.strip()]
+    if index is not None:
+        regs = [str(r).lower() for r in (index.get("calendar_regions") or [])]
+        return [r for r in regs if r in ("us", "ca")]
+    regs = set()
+    for c in constituents:
+        suf = split_suffix((c.get("yahoo_symbol") or "").upper())[1]
+        if suf in CA_SUFFIXES or suf == ".V":
+            regs.add("ca")
+        elif suf == "":
+            regs.add("us")
+    return sorted(regs)
+
+
+def sparse_index(index, regions):
+    """Non-US/CA indices get a per-ticker pass for every mapped name."""
+    if index is None:
+        return False
+    configured = [str(r).lower() for r in (index.get("calendar_regions") or [])]
+    if not configured:
+        return True
+    return any(r not in ("us", "ca") for r in configured)
+
+
+def write_calendar_table(rows, path, kind):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    cols = ["date", "ticker", "company", "timing", "eps_estimate", "source", "asof", "yahoo_symbol", "symbol", "time_et", "marketcap", "projected"]
+    if kind == "csv":
+        with path.open("w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")
+            w.writeheader()
+            for row in rows:
+                w.writerow(row)
+        return
+    def esc(v):
+        return ("" if v is None else str(v)).replace("|", "\\|").replace("\n", " ")
+    lines = ["| " + " | ".join(cols) + " |", "| " + " | ".join("---" for _ in cols) + " |"]
+    for row in rows:
+        lines.append("| " + " | ".join(esc(row.get(c)) for c in cols) + " |")
+    path.write_text("\n".join(lines) + "\n")
+
+
+def _manual_constituents(tickers=None, symbols_file=None):
+    rows = []
+    if tickers:
+        for part in str(tickers).split(","):
+            part = part.strip()
+            if part:
+                rows.append({"symbol": part})
+    if symbols_file:
+        parsed, _asof = parse_user_holdings(symbols_file)
+        for row in parsed[0]:
+            rows.append(row)
+        for row in parsed[1]:
+            rows.append(row)
+    out, unmapped = [], []
+    seen = set()
+    for row in rows:
+        raw = row.get("yahoo_symbol") or row.get("symbol")
+        mode = "per-row" if (raw and (split_known_suffix(raw.upper())[1] or ":" in raw)) else ""
+        yahoos, reason = map_to_yahoo(raw, mode)
+        if not yahoos:
+            yahoos, reason = map_to_yahoo(raw, "")
+        if not yahoos:
+            unmapped.append({"symbol": raw, "name": row.get("name"), "reason": reason or "unmapped"})
+            continue
+        for y in yahoos:
+            if y in seen:
+                continue
+            seen.add(y)
+            out.append({"symbol": row.get("symbol") or y, "yahoo_symbol": y, "name": row.get("name"), "weight": row.get("weight")})
+    return out, unmapped
+
+
+def cmd_earnings_calendar(a, R):
+    try:
+        start = parse_ymd(getattr(a, "date_from", None), "--from")
+        end = parse_ymd(getattr(a, "date_to", None), "--to")
+    except Skip as e:
+        R.out["attempts"].append({"source": "fin.py", "status": "error", "message": str(e)})
+        return
+    if end < start:
+        R.out["attempts"].append({"source": "fin.py", "status": "error", "message": "--to is before --from"})
+        return
+    if (end - start).days > 366:
+        R.out["attempts"].append({"source": "fin.py", "status": "error", "message": "date range is longer than 366 days"})
+        return
+
+    index = None
+    constituents = []
+    manual_unmapped = []
+    tickers = getattr(a, "tickers", None)
+    symbols_file = getattr(a, "symbols_file", None)
+    index_token = getattr(a, "index", None)
+    if tickers or symbols_file:
+        try:
+            constituents, manual_unmapped = _manual_constituents(tickers, symbols_file)
+        except (Skip, Empty) as e:
+            R.out["attempts"].append({"source": "tickers", "status": "skipped" if isinstance(e, Skip) else "empty", "message": str(e)})
+            return
+        R.out["symbol"] = tickers or str(symbols_file)
+        if index_token:
+            R.out["notes"].append("--tickers/--symbols-file supplied; --index was not used to build the constituent list")
+    elif index_token:
+        selected, source_file = parse_source_arg(getattr(a, "source", None))
+        file_path = getattr(a, "file", None) or source_file
+        sub = Runner("constituents", index_token)
+        try:
+            registry = load_index_registry(registry_path(getattr(a, "registry", None)))
+            index = resolve_index_entry(registry, index_token)
+        except Skip as e:
+            R.out["attempts"].append({"source": "registry", "status": "skipped", "message": str(e)})
+            return
+        R.out["symbol"] = index.get("id")
+        run_constituent_chain(index, registry, selected, file_path, bool(getattr(a, "refresh", False)), sub)
+        for attempt in sub.out["attempts"]:
+            R.out["attempts"].append({"source": f"constituents:{attempt.get('source')}", **{k: v for k, v in attempt.items() if k != "source"}})
+        R.out["notes"].extend(sub.out.get("notes") or [])
+        if not sub.out["ok"]:
+            R.out["notes"].append("No constituent source answered, so the earnings calendar was not queried.")
+            return
+        constituents = list(sub.out["data"].get("constituents") or [])
+        manual_unmapped = list(sub.out["data"].get("unmapped") or [])
+        if getattr(a, "top", None):
+            constituents = rank_constituents(constituents, a.top, R.out["notes"])
+    elif not getattr(a, "region", None):
+        R.out["attempts"].append({"source": "fin.py", "status": "error", "message": "pass --index, --tickers, --symbols-file, or --region"})
+        return
+
+    # Carry registry unmapped into the result even when the name has no Yahoo ticker.
+    all_constituents = constituents + manual_unmapped
+    regions = regions_for(index, getattr(a, "region", None), constituents)
+    verify_all = sparse_index(index, regions)
+    if index is not None and not regions and not verify_all:
+        verify_all = True
+    events = []
+    bulk_answered = False
+    retrieved = now_utc()
+
+    if FH_KEY and (index is not None or constituents or getattr(a, "region", None)):
+        t0 = time.time()
+        try:
+            rows, url = finnhub_earnings_calendar(start, end)
+            for row in rows:
+                row["asof"] = retrieved
+            events.extend(rows)
+            bulk_answered = True
+            R.out["attempts"].append({
+                "source": "finnhub", "status": "ok", "ms": int((time.time() - t0) * 1000),
+                "message": f"{len(rows)} rows {start.isoformat()}..{end.isoformat()}",
+            })
+            R.out["source_url"] = url
+        except Skip as e:
+            R.out["attempts"].append({"source": "finnhub", "status": "skipped", "message": str(e)})
+        except Empty as e:
+            R.out["attempts"].append({"source": "finnhub", "status": "empty", "message": str(e)})
+        except Exception as e:
+            R.out["attempts"].append({"source": "finnhub", "status": "error", "message": f"{type(e).__name__}: {str(e)[:200]}"})
+    else:
+        R.out["attempts"].append({"source": "finnhub", "status": "skipped", "message": "FINNHUB_API_KEY not set"})
+
+    # Yahoo screener is the bulk path when Finnhub is unset. If Finnhub was set and
+    # answered, still record that Yahoo was not required. If Finnhub failed, fall through.
+    finnhub_ok = any(x.get("source") == "finnhub" and x.get("status") == "ok" for x in R.out["attempts"])
+    yahoo_regions = [] if finnhub_ok else [r for r in regions if r in ("us", "ca")]
+    if not finnhub_ok and not yahoo_regions and not verify_all and constituents:
+        # US/CA index whose regions were filtered out should not happen; keep a note.
+        pass
+    for region in yahoo_regions:
+        t0 = time.time()
+        try:
+            rows, message = yahoo_earnings_calendar(region, start, end)
+            for row in rows:
+                row["asof"] = retrieved
+            events.extend(rows)
+            bulk_answered = True
+            R.out["attempts"].append({
+                "source": "yahoo_calendar", "status": "ok" if rows else "empty",
+                "ms": int((time.time() - t0) * 1000), "message": message,
+            })
+            if rows and not R.out.get("source_url"):
+                R.out["source_url"] = "https://finance.yahoo.com/calendar/earnings"
+        except Skip as e:
+            R.out["attempts"].append({"source": "yahoo_calendar", "status": "skipped", "message": f"region {region}: {e}"})
+        except Empty as e:
+            R.out["attempts"].append({"source": "yahoo_calendar", "status": "empty", "message": f"region {region}: {e}"})
+        except Exception as e:
+            R.out["attempts"].append({"source": "yahoo_calendar", "status": "error", "message": f"region {region}: {type(e).__name__}: {str(e)[:180]}"})
+    if finnhub_ok:
+        R.out["attempts"].append({"source": "yahoo_calendar", "status": "skipped", "message": "Finnhub calendar answered; Yahoo screener not required"})
+    elif not yahoo_regions:
+        why = "non-US/CA index uses the per-ticker lookup" if verify_all else "no us/ca calendar region"
+        R.out["attempts"].append({"source": "yahoo_calendar", "status": "skipped", "message": why})
+
+    # Intersect the bulk pass first so the verify pass only sees misses.
+    if constituents:
+        pre_rows, pre_counts, pre_missing, pre_unmapped = assemble_earnings(all_constituents, events)
+        if verify_all:
+            to_verify = [c for c in constituents if c.get("yahoo_symbol")]
+        else:
+            missing_keys = {symkey(c.get("yahoo_symbol")) for c in pre_missing}
+            to_verify = [c for c in constituents if symkey(c.get("yahoo_symbol")) in missing_keys]
+    else:
+        pre_rows, pre_missing = [], []
+        to_verify = []
+        pre_unmapped = []
+
+    verify_errors = []
+    verify_rows = []
+    if to_verify:
+        workers = int(getattr(a, "workers", None) or VERIFY_WORKERS_CAP)
+        if workers > VERIFY_WORKERS_CAP:
+            R.out["notes"].append(f"--workers capped at {VERIFY_WORKERS_CAP}")
+        workers = max(1, min(VERIFY_WORKERS_CAP, workers))
+        t0 = time.time()
+
+        def job(row):
+            found, err = ticker_earnings_in_window(row["yahoo_symbol"], start, end)
+            for item in found:
+                item["company"] = item.get("company") or row.get("name")
+                item["symbol"] = row.get("symbol") or item.get("symbol")
+                item["asof"] = retrieved
+            return found, err
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for found, err in pool.map(job, to_verify):
+                verify_rows.extend(found)
+                if err:
+                    verify_errors.append(err)
+        status = "ok" if not verify_errors or verify_rows else "error"
+        if verify_rows and verify_errors:
+            status = "ok"
+        R.out["attempts"].append({
+            "source": "yahoo_earnings_dates", "status": status,
+            "ms": int((time.time() - t0) * 1000),
+            "message": f"looked up {len(to_verify)}, dated {len({r['yahoo_symbol'] for r in verify_rows})}, errors {len(verify_errors)}",
+        })
+        if verify_errors and len(verify_errors) <= 3:
+            R.out["notes"].append("per-ticker lookup errors: " + "; ".join(verify_errors))
+        elif verify_errors:
+            R.out["notes"].append(f"{len(verify_errors)} per-ticker lookups failed; first: {verify_errors[0]}")
+    else:
+        R.out["attempts"].append({"source": "yahoo_earnings_dates", "status": "skipped", "message": "bulk pass covered every mapped constituent" if constituents else "no constituent list"})
+
+    rows, counts, missing, unmapped = assemble_earnings(all_constituents, events + verify_rows)
+    for row in rows:
+        row["asof"] = row.get("asof") or retrieved
+        row["retrieved_at_utc"] = retrieved
+    answered = bulk_answered or any(x.get("source") == "yahoo_earnings_dates" and x.get("status") in ("ok", "empty") for x in R.out["attempts"])
+    # A region-only screener that returned rows, or a constituent run whose lookups answered.
+    if not constituents and bulk_answered:
+        rows, counts, missing, unmapped = assemble_earnings([], events)
+        for row in rows:
+            row["asof"] = retrieved
+            row["retrieved_at_utc"] = retrieved
+        answered = True
+    if not answered and not rows:
+        R.out["data"] = {
+            "from": start.isoformat(), "to": end.isoformat(), "rows": [],
+            "counts": {"constituents": len(all_constituents), "found": 0, "no_date": len(constituents), "unmapped": len(manual_unmapped), "in_window": 0, "missing": len(constituents), "events": 0},
+            "missing": [{"symbol": c.get("symbol"), "yahoo_symbol": c.get("yahoo_symbol"), "name": c.get("name")} for c in constituents],
+            "unmapped": manual_unmapped,
+            "asof": retrieved,
+        }
+        return
+    sources = {r.get("source") for r in rows}
+    if len(sources) == 1:
+        R.out["source"] = next(iter(sources))
+    elif rows:
+        R.out["source"] = "mixed"
+    elif bulk_answered:
+        R.out["source"] = "finnhub" if finnhub_ok else "yahoo_calendar"
+    else:
+        R.out["source"] = "yahoo_earnings_dates"
+    if not R.out.get("source_url"):
+        R.out["source_url"] = "https://finance.yahoo.com/calendar/earnings"
+    data = {
+        "index_id": index.get("id") if index else None,
+        "from": start.isoformat(),
+        "to": end.isoformat(),
+        "asof": retrieved,
+        "rows": rows,
+        "counts": counts,
+        "missing": missing,
+        "unmapped": unmapped,
+    }
+    R.out["data"] = clean(data)
+    R.out["asof"] = retrieved
+    R.out["ok"] = True
+    R.out["retrieved_at_utc"] = retrieved
+    R.out["notes"].append("Yahoo Finance dates are projected. This command does not call the Nasdaq.com API.")
+    if any(r.get("projected") for r in rows):
+        R.out["notes"].append("Rows with projected true came from Yahoo (screener or per-ticker earnings dates), not from a company filing.")
+    for flag, kind in (("csv_path", "csv"), ("md_path", "md")):
+        dest = getattr(a, flag, None)
+        if not dest:
+            continue
+        try:
+            write_calendar_table(rows, dest, kind)
+            R.out["notes"].append(f"wrote {kind} {dest}")
+        except OSError as e:
+            R.out["notes"].append(f"could not write {kind} {dest}: {e}")
+
+
 def cmd_doctor(a, R):
     checks = {"version": __version__}
     try:
@@ -1049,6 +2750,26 @@ def cmd_doctor(a, R):
         "routing": "filings tries sedarplus only after EDGAR has no CIK, for .TO/.V/.NE/.CN or a company name",
         "terms": SEDAR_TERMS,
         "limits": "Terms prohibit robots, scraping, automated searches, and databases. A block page or layout change fails the lookup.",
+    }
+    reg = registry_path(None)
+    checks["index_registry"] = {
+        "path": str(reg),
+        "exists": reg.is_file(),
+        "env": "FIN_INDEX_REGISTRY",
+        "flag": "--registry",
+        "example": str(EXAMPLE_INDEX_REGISTRY),
+    }
+    checks["constituents_cache"] = str(CACHE / "constituents")
+    checks["yahoo_calendars"] = yahoo_calendar_status()
+    try:
+        import openpyxl
+        checks["openpyxl"] = f"optional, installed {getattr(openpyxl, '__version__', '')}".strip()
+    except ImportError:
+        checks["openpyxl"] = "optional, not installed (SPDR holdings XLSX fallback needs it; imported only then)"
+    checks["earnings_calendar"] = {
+        "bulk": "Finnhub calendar/earnings when FINNHUB_API_KEY is set, otherwise yfinance Calendars for us and ca",
+        "verify": "per-ticker yfinance earnings dates for names the bulk pass missed",
+        "nasdaq_com": "not used",
     }
     R.out.update(ok=True, source="local", retrieved_at_utc=now_utc(), data=checks)
 
@@ -1104,9 +2825,33 @@ def main(argv=None):
     q.add_argument("--quarter", help="YYYYQn, e.g. 2026Q3"); q.add_argument("--grep"); q.add_argument("--max-chars", type=int, default=20000)
     q.add_argument("--offset", type=int, default=0); q.add_argument("--save")
     add("doctor", cmd_doctor, symbol=False, src=False, help="show configured sources/keys")
+    q = add("constituents", cmd_constituents, src=False,
+            symbol_help="index id or name (sp-500, sp500, tsx60, nasdaq-100, \"S&P/TSX 60\")",
+            help="index members from the registry, with Yahoo tickers")
+    q.add_argument("--registry", help="index registry JSON (default /home/box/agent-data/finance/index-registry.json or $FIN_INDEX_REGISTRY)")
+    q.add_argument("--source", help="wikipedia,slickcharts,spdr,ishares,file:PATH (default: registry order, then --file)")
+    q.add_argument("--file", help="CSV, JSON, or one ticker per line, tried after the registry sources")
+    q.add_argument("--top", type=int, help="keep N names by weight, or by Yahoo market cap when there are no weights")
+    q.add_argument("--refresh", action="store_true", help="ignore the constituents cache")
+    q = add("earnings-calendar", cmd_earnings_calendar, symbol=False, src=False,
+            help="earnings dates for an index or a ticker list")
+    q.add_argument("--index", help="registry index id or name (sp500, tsx60, nasdaq-100)")
+    q.add_argument("--from", dest="date_from", required=True, help="YYYY-MM-DD")
+    q.add_argument("--to", dest="date_to", required=True, help="YYYY-MM-DD")
+    q.add_argument("--tickers", help="comma-separated Yahoo tickers, instead of --index")
+    q.add_argument("--symbols-file", help="ticker file (csv, json, or one per line), instead of --index")
+    q.add_argument("--region", help="us,ca when not using an index: Yahoo screener only, no constituent intersection")
+    q.add_argument("--registry", help="index registry JSON (default /home/box/agent-data/finance/index-registry.json or $FIN_INDEX_REGISTRY)")
+    q.add_argument("--file", help="constituent file passed through to the index lookup")
+    q.add_argument("--source", help="constituent source filter, same as constituents --source")
+    q.add_argument("--top", type=int, help="limit the constituent list before the calendar lookup")
+    q.add_argument("--refresh", action="store_true", help="ignore the constituents cache")
+    q.add_argument("--workers", type=int, default=4, help="per-ticker lookup workers (capped at 4)")
+    q.add_argument("--csv", dest="csv_path", help="also write a CSV table to this path")
+    q.add_argument("--md", dest="md_path", help="also write a Markdown table to this path")
 
     a = p.parse_args(argv)
-    R = Runner(a.cmd, getattr(a, "symbol", None) or getattr(a, "query", None))
+    R = Runner(a.cmd, getattr(a, "symbol", None) or getattr(a, "query", None) or getattr(a, "index", None))
     try:
         a.fn(a, R)
     except Exception as e:  # last-resort guard: still emit JSON

@@ -47,9 +47,53 @@ try:
 except fin.Skip as e:
     assert "sedarplus.ca" in str(e)
 print("offline sedar checks OK", fin.__version__)
+assert fin.__version__ == "1.1.0"
 PY
 if [ $? -ne 0 ]; then
   echo "offline sedar checks FAIL"
+  exit 1
+fi
+python3 - << 'PY'
+import fin, io, json, contextlib, tempfile, os
+from pathlib import Path
+assert fin.__version__ == "1.1.0"
+assert fin.map_to_yahoo("BRK.B", "")[0] == ["BRK-B"]
+assert fin.map_to_yahoo("BBD.B", ".TO")[0] == ["BBD-B.TO"]
+assert fin.map_to_yahoo("2299955D", ".TO")[0] == []
+assert fin.map_to_yahoo("SEHK:\u00a0939", "per-row")[0] == ["0939.HK"]
+assert fin.constituent_block_reason(403, "<html><title>Just a moment...</title></html>")
+assert fin.constituent_block_reason(406, "nope")
+long_wiki = "<html><title>S&P/TSX 60</title>" + ("word " * 20000) + "hcaptcha</html>"
+assert fin.constituent_block_reason(200, long_wiki) is None
+cons = [
+    {"symbol": "AAPL", "yahoo_symbol": "AAPL", "name": "Apple"},
+    {"symbol": "MSFT", "yahoo_symbol": "MSFT", "name": "Microsoft"},
+    {"symbol": None, "name": "National Bank of Canada"},
+]
+events = [{"date": "2026-12-01", "timing": "AMC", "ticker": "AAPL", "yahoo_symbol": "AAPL",
+           "company": "Apple", "eps_estimate": 1.1, "source": "yahoo_calendar", "projected": True}]
+rows, counts, missing, unmapped = fin.assemble_earnings(cons, events)
+assert counts["found"] == 1 and counts["no_date"] == 1 and counts["unmapped"] == 1 and rows[0]["timing"] == "AMC"
+fin.SCRAPE_MIN_INTERVAL = 0
+fin.CACHE = Path(tempfile.mkdtemp(prefix="fin-selftest-"))
+reg = Path("examples/index-registry.example.json")
+names = fin.CACHE / "names.csv"
+names.write_text("symbol,name\nAAPL,Apple\nBRK.B,Berkshire\n")
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    rc = fin.main(["constituents", "sp500", "--registry", str(reg), "--source", "file:" + str(names)])
+data = json.loads(buf.getvalue())
+assert rc == 0 and data["ok"] and data["data"]["count"] == 2
+assert {r["yahoo_symbol"] for r in data["data"]["constituents"]} == {"AAPL", "BRK-B"}
+assert any(a["source"] == "wikipedia_table" and a["status"] == "skipped" for a in data["attempts"])
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    rc = fin.main(["constituents", "not-an-index", "--registry", str(reg)])
+assert rc == 2 and json.loads(buf.getvalue())["ok"] is False
+print("offline constituent checks OK", fin.__version__)
+PY
+if [ $? -ne 0 ]; then
+  echo "offline constituent checks FAIL"
   exit 1
 fi
 python3 fin.py --version
@@ -82,4 +126,34 @@ echo "-- SEDAR+ (SKIP if blocked, captcha-gated, or unreachable) --"
 run_sedar sedar CSU.TO --limit 5
 run_sedar sedar DOL.TO --limit 5
 run_sedar filings CSU.TO --limit 3
+echo "-- constituents and earnings-calendar (SKIP if blocked, captcha-gated, or unreachable) --"
+reg="examples/index-registry.example.json"
+export FIN_CACHE_DIR="${FIN_CACHE_DIR:-$(mktemp -d)}"
+run_index(){ python3 fin.py "$@" 2>/dev/null | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+a=d.get('attempts') or []
+blob=' '.join((x.get('message') or '') for x in a).lower()
+if d.get('ok'):
+    flag='OK  '
+elif any(s in blob for s in ('blocked', 'unreachable', 'captcha', 'browser-check', 'timeout', 'throttle')):
+    flag='SKIP'
+else:
+    flag='FAIL'
+extra=''
+data=d.get('data') or {}
+if 'count' in data:
+    extra=' count='+str(data.get('count'))+' unmapped='+str(data.get('unmapped_count'))
+elif 'counts' in data:
+    c=data['counts']
+    extra=' found='+str(c.get('found'))+' no_date='+str(c.get('no_date'))+' unmapped='+str(c.get('unmapped'))
+print(' '.join(sys.argv[1:])[:52].ljust(52), flag, str(d.get('source')).ljust(18), ', '.join(x['source']+':'+x['status'] for x in a)+extra)" "$@"; }
+index_out=$(mktemp)
+run_index constituents tsx60 --registry "$reg" --refresh | tee "$index_out"
+run_index constituents nasdaq-100 --registry "$reg" --refresh | tee -a "$index_out"
+run_index earnings-calendar --region us --from 2026-12-01 --to 2026-12-01 | tee -a "$index_out"
+if grep -q ' FAIL ' "$index_out" || [ "$(grep -Ec ' OK   | SKIP ' "$index_out")" -lt 3 ]; then
+  echo "constituents / earnings-calendar checks FAIL"
+  exit 1
+fi
 

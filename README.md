@@ -98,6 +98,8 @@ Tickers are Yahoo-style: `AAPL`, `BRK-B`, `RY.TO`, `SHOP.TO`, `XYZ.V`. EDGAR com
 | `sedar --document` | sedarplus | `fin.py sedar DOL.TO --document 'https://www.sedarplus.ca/...' --save filing.pdf` |
 | `search` | sec_edgar full-text | `fin.py search '"agreement and plan of merger"' --forms 8-K --start 2026-01-01` |
 | `transcripts` | alphavantage → finnhub (premium) | `fin.py transcripts IBM --quarter 2024Q1 --grep guidance` |
+| `constituents` | registry order: Wikipedia table, then fallback (Slickcharts, SPDR XLSX, iShares Canada CSV), then a user file | `fin.py constituents tsx60` |
+| `earnings-calendar` | Finnhub calendar if `FINNHUB_API_KEY` is set, else Yahoo screener (US/CA), then per-ticker Yahoo dates for names the bulk pass missed | `fin.py earnings-calendar --index sp500 --from 2026-12-01 --to 2026-12-04` |
 | `doctor` | local | key/UA status |
 
 Useful XBRL concepts: `Revenues`, `RevenueFromContractWithCustomerExcludingAssessedTax`,
@@ -105,6 +107,18 @@ Useful XBRL concepts: `Revenues`, `RevenueFromContractWithCustomerExcludingAsses
 `LongTermDebt`, `WeightedAverageNumberOfDilutedSharesOutstanding`; IFRS filers (`ifrs-full`):
 `Revenue`, `ProfitLoss`, `ProfitLossAttributableToOwnersOfParent`, `DilutedEarningsLossPerShare`.
 Run `fin.py facts TICKER` with no `--concept` to list everything a company reports.
+
+## Index constituents and the earnings calendar
+
+`constituents` and `earnings-calendar` read an index registry. The default path is `/home/box/agent-data/finance/index-registry.json`. Override it with `--registry PATH` or `FIN_INDEX_REGISTRY`. That file stays out of this repo. `examples/index-registry.example.json` is a fixture: the seed list plus the SPDR and iShares Canada holdings URLs checked on 2026-11-28. Ids and short names both work (`sp-500` / `sp500`, `sp-tsx-60` / `tsx60`, `nasdaq-100`).
+
+Source order for `constituents` is the registry `constituents_source`, then each `fallback_source` (one object or a list), then `--file` or `--source file:PATH`. Wikipedia tables are fetched as the article HTML (a descriptive User-Agent, at most one request a second). robots.txt allows those article pages; this client does not call the MediaWiki API. Slickcharts is the HTML table for the Nasdaq-100, Dow, and S&P 500. SPDR daily holdings workbooks (DIA, SPY, MDY) need `openpyxl`, imported only when that source runs. iShares Canada CSV holdings are XIU for the TSX 60 and XIC for the TSX Composite. A user file may be CSV, JSON, or one ticker per line.
+
+Symbols are mapped to Yahoo tickers with the registry suffix (`.` in a class share becomes `-`, so `BBD.B` with `.TO` is `BBD-B.TO`, and `BRK.B` is `BRK-B`). A per-row suffix uses an exchange prefix or a Main listing value only when that venue maps to one Yahoo suffix. `Euronext` without a city, `KRX`, and a local code that contains a space stay in `unmapped`. Nothing is guessed. Results are cached under `FIN_CACHE_DIR/constituents` (default `~/.cache/fin-py/constituents`) for 30 days, 7 days for `nasdaq-100` and `stoxx-europe-600`. `--refresh` fetches again. `--source` and `--file` do not read or replace that default cache. `--top N` keeps the N largest weights, or asks Yahoo for market cap when the list has no weights.
+
+`earnings-calendar --from YYYY-MM-DD --to YYYY-MM-DD` takes `--index`, or `--tickers` / `--symbols-file` instead of an index, or `--region us,ca` for the screener alone. The bulk pass calls Finnhub `calendar/earnings` when `FINNHUB_API_KEY` is set. Otherwise it pages the Yahoo earnings screener through `yfinance.Calendars` (yfinance 1.8 or newer): the public method for `us`, and `Calendars._get_data` with a region for `ca`. Yahoo's end bound is midnight at the start of `--to`, so the request runs through the next date and the rows are filtered back to the requested dates. Rows are intersected with the constituents. Names the bulk pass missed, and every mapped name on a non-US/CA index, get one `yfinance` earnings-date lookup (at most 4 workers, one retry if Yahoo throttles). The Nasdaq.com API is not called. JSON rows have `date`, `ticker`, `company`, `timing` (`BMO`, `AMC`, `intraday`, or `unknown`), `eps_estimate`, `source`, and `asof`. `counts` includes `found`, `no_date`, and `unmapped`. `--csv` and `--md` write the same rows beside the JSON. Yahoo dates are marked `projected`.
+
+On HTTP 401, 403, 406, or 429, or on a captcha / browser-check page, that source stops. The attempt is `skipped` and the message starts with `blocked`. There is no second request, no alternate User-Agent, and no browser. Exit code is 2 when no source answered.
 
 ## Output contract
 

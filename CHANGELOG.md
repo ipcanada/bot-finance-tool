@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.1.0 — 2026-11-28
+
+### Added
+
+- `constituents`: resolve an index from the registry at `/home/box/agent-data/finance/index-registry.json` (`--registry` or `FIN_INDEX_REGISTRY`). Order is the Wikipedia table, then `fallback_source` (Slickcharts for the Nasdaq-100, Dow, and S&P 500; SPDR holdings XLSX for DIA, SPY, and MDY; iShares Canada CSV for XIU and XIC), then a user file. Yahoo tickers are mapped from the registry suffix. Class-share dots become hyphens. Rows with no single Yahoo suffix are listed under `unmapped` and are not guessed. Cache is `FIN_CACHE_DIR/constituents/<id>.json` (30 days, 7 for the Nasdaq-100 and STOXX Europe 600).
+- `earnings-calendar --from YYYY-MM-DD --to YYYY-MM-DD` with `--index`, or `--tickers` / `--symbols-file`, or `--region us,ca`. Bulk pass is Finnhub's earnings calendar when `FINNHUB_API_KEY` is set, otherwise the Yahoo screener via `yfinance.Calendars` (US and CA). Names that bulk pass misses get a per-ticker Yahoo earnings-date lookup (4 workers, one throttle retry). JSON rows include date, ticker, company, BMO/AMC/intraday/unknown, EPS estimate, source, and as-of. `counts` reports found, no date, and unmapped. Optional `--csv` and `--md`.
+- `doctor` reports the registry path, the constituents cache, whether yfinance Calendars is available (needs yfinance 1.8 or newer), and that openpyxl is optional. `./selftest.sh` checks the new commands offline, then live `constituents tsx60`, `constituents nasdaq-100`, and a one-day US earnings calendar. A block or an unreachable host prints `SKIP`.
+- `examples/index-registry.example.json`, the seed registry plus the SPDR and iShares fallbacks. The live registry path is not part of this repo.
+
+### Limitation
+
+A block page, captcha, HTTP 403, or HTTP 406 stops that source. The attempt records it and the client does not retry with another identity. Slickcharts answered HTTP 403 ("Just a moment...") from the environment used to cut this release, so `constituents nasdaq-100` stops there until the registry has another source or you pass `--file`. The Wikipedia S&P/TSX 60 table has an empty symbol cell for National Bank of Canada; that row stays unmapped. SPDR and iShares files are ETF holdings, not the official index, and can include a residual line. The Nasdaq.com earnings API is not used. Yahoo screener dates are projected.
+
 ## 1.0.0 — 2026-11-26
 
 First semantic version. The in-file label before this release was an informal `1.0`.

@@ -1,0 +1,1098 @@
+{
+ "schema_version": 2,
+ "wikipedia_list_url": "https://en.wikipedia.org/wiki/List_of_stock_market_indices",
+ "default_groups": [
+  "global",
+  "regional",
+  "United States",
+  "Canada"
+ ],
+ "wikipedia_snapshot": {
+  "fetched_utc": "2026-11-28T00:00:00Z",
+  "note": "Seed. Entries below are the index names seen under Global, Regional (Asia, Europe, Latin America), National>United States and National>Canada. index-registry-update rewrites this on every check.",
+  "names": [
+   "Barron's 400 Index",
+   "Dow Jones Global Titans 50",
+   "Dow Jones Industrial Average",
+   "Dow Jones Transportation Average",
+   "Dow Jones Utility Average",
+   "EURO STOXX 50",
+   "FTSE All-World",
+   "MSCI World",
+   "NYSE Arca Major Market Index",
+   "Nasdaq Composite",
+   "Nasdaq Financial-100",
+   "Nasdaq-100",
+   "OTCM QX ADR 30",
+   "Russell 1000",
+   "Russell 2500",
+   "Russell 3000",
+   "Russell MidCap",
+   "Russell Small Cap Completeness",
+   "Russell Top 200",
+   "S&P 100",
+   "S&P 1500",
+   "S&P 500",
+   "S&P Asia 50",
+   "S&P Europe 350",
+   "S&P Global 100",
+   "S&P Global 1200",
+   "S&P Latin America 40",
+   "S&P MidCap 400",
+   "S&P SmallCap 600",
+   "S&P/TSX 60",
+   "S&P/TSX Composite Index",
+   "S&P/TSX Venture Composite Index",
+   "STOXX Europe 600",
+   "The Global Dow",
+   "UBS 100 Index",
+   "Value Line Composite Index",
+   "Wilshire 4500",
+   "Wilshire 5000"
+  ]
+ },
+ "indices": [
+  {
+   "id": "dj-global-titans-50",
+   "name": "Dow Jones Global Titans 50",
+   "group": "global",
+   "region": "Global",
+   "wikipedia_url": "https://en.wikipedia.org/wiki/Dow_Jones_Global_Titans_50",
+   "constituents_source": {
+    "type": "wikipedia_table",
+    "url": "https://en.wikipedia.org/wiki/Dow_Jones_Global_Titans_50",
+    "symbol_col": "Ticker",
+    "name_col": "Corporation",
+    "table_match": null,
+    "tested": true,
+    "note": "multi-index columns; Country column gives exchange; per-row suffix"
+   },
+   "yahoo_suffix": "per-row",
+   "approx_size": 50,
+   "large": false,
+   "default": true,
+   "enabled": true,
+   "added_by": "default",
+   "added_on": "2026-11-27",
+   "constituents_asof": null,
+   "constituents_n": null,
+   "fallback_source": null,
+   "calendar_regions": []
+  },
+  {
+   "id": "ftse-all-world",
+   "name": "FTSE All-World",
+   "group": "global",
+   "region": "Global",
+   "wikipedia_url": "https://en.wikipedia.org/wiki/FTSE_All-World_Index_Series",
+   "constituents_source": {
+    "type": "none",
+    "tested": false,
+    "note": "no parseable constituent table found on 2026-11-27; ask the user for a list (paste or file) or a page URL"
+   },
+   "yahoo_suffix": "per-row",
+   "approx_size": 4000,
+   "large": true,
+   "default": true,
+   "enabled": true,
+   "added_by": "default",
+   "added_on": "2026-11-27",
+   "constituents_asof": null,
+   "constituents_n": null,
+   "fallback_source": null,
+   "calendar_regions": []
+  },
+  {
+   "id": "msci-world",
+   "name": "MSCI World",
+   "group": "global",
+   "region": "Global",
+   "wikipedia_url": "https://en.wikipedia.org/wiki/MSCI_World",
+   "constituents_source": {
+    "type": "none",
+    "tested": false,
+    "note": "no parseable constituent table found on 2026-11-27; ask the user for a list (paste or file) or a page URL"
+   },
+   "yahoo_suffix": "per-row",
+   "approx_size": 1300,
+   "large": true,
+   "default": true,
+   "enabled": true,
+   "added_by": "default",
+   "added_on": "2026-11-27",
+   "constituents_asof": null,
+   "constituents_n": null,
+   "fallback_source": null,
+   "calendar_regions": []
+  },
+  {
+   "id": "otcm-qx-adr-30",
+   "name": "OTCM QX ADR 30",
+   "group": "global",
+   "region": "Global",
+   "wikipedia_url": "https://en.wikipedia.org/wiki/OTC_Markets_Group",
+   "constituents_source": {
+    "type": "none",
+    "tested": false,
+    "note": "no parseable constituent table found on 2026-11-27; ask the user for a list (paste or file) or a page URL"
+   },
+   "yahoo_suffix": "none",
+   "approx_size": 30,
+   "large": false,
+   "default": true,
+   "enabled": true,
+   "added_by": "default",
+   "added_on": "2026-11-27",
+   "constituents_asof": null,
+   "constituents_n": null,
+   "fallback_source": null,
+   "calendar_regions": []
+  },
+  {
+   "id": "sp-global-100",
+   "name": "S&P Global 100",
+   "group": "global",
+   "region": "Global",
+   "wikipedia_url": "https://en.wikipedia.org/wiki/S%26P_Global_100",
+   "constituents_source": {
+    "type": "none",
+    "tested": false,
+    "note": "no parseable constituent table found on 2026-11-27; ask the user for a list (paste or file) or a page URL"
+   },
+   "yahoo_suffix": "per-row",
+   "approx_size": 100,
+   "large": false,
+   "default": true,
+   "enabled": true,
+   "added_by": "default",
+   "added_on": "2026-11-27",
+   "constituents_asof": null,
+   "constituents_n": null,
+   "fallback_source": null,
+   "calendar_regions": []
+  },
+  {
+   "id": "sp-global-1200",
+   "name": "S&P Global 1200",
+   "group": "global",
+   "region": "Global",
+   "wikipedia_url": "https://en.wikipedia.org/wiki/S%26P_Global_1200",
+   "constituents_source": {
+    "type": "none",
+    "tested": false,
+    "note": "no parseable constituent table found on 2026-11-27; ask the user for a list (paste or file) or a page URL"
+   },
+   "yahoo_suffix": "per-row",
+   "approx_size": 1200,
+   "large": true,
+   "default": true,
+   "enabled": true,
+   "added_by": "default",
+   "added_on": "2026-11-27",
+   "constituents_asof": null,
+   "constituents_n": null,
+   "fallback_source": null,
+   "calendar_regions": []
+  },
+  {
+   "id": "global-dow",
+   "name": "The Global Dow",
+   "group": "global",
+   "region": "Global",
+   "wikipedia_url": "https://en.wikipedia.org/wiki/The_Global_Dow",
+   "constituents_source": {
+    "type": "none",
+    "tested": false,
+    "note": "no parseable constituent table found on 2026-11-27; ask the user for a list (paste or file) or a page URL"
+   },
+   "yahoo_suffix": "per-row",
+   "approx_size": 150,
+   "large": false,
+   "default": true,
+   "enabled": true,
+   "added_by": "default",
+   "added_on": "2026-11-27",
+   "constituents_asof": null,
+   "constituents_n": null,
+   "fallback_source": null,
+   "calendar_regions": []
+  },
+  {
+   "id": "sp-asia-50",
+   "name": "S&P Asia 50",
+   "group": "regional",
+   "region": "Asia",
+   "wikipedia_url": "https://en.wikipedia.org/wiki/S%26P_Asia_50",
+   "constituents_source": {
+    "type": "wikipedia_table",
+    "url": "https://en.wikipedia.org/wiki/S%26P_Asia_50",
+    "symbol_col": "Ticker",
+    "name_col": "Company",
+    "table_match": null,
+    "tested": true,
+    "note": "exchange-local tickers; map via suffix table"
+   },
+   "yahoo_suffix": "per-row",
+   "approx_size": 50,
+   "large": false,
+   "default": true,
+   "enabled": true,
+   "added_by": "default",
+   "added_on": "2026-11-27",
+   "constituents_asof": null,
+   "constituents_n": null,
+   "fallback_source": null,
+   "calendar_regions": []
+  },
+  {
+   "id": "euro-stoxx-50",
+   "name": "EURO STOXX 50",
+   "group": "regional",
+   "region": "Europe",
+   "wikipedia_url": "https://en.wikipedia.org/wiki/Euro_Stoxx_50",
+   "constituents_source": {
+    "type": "wikipedia_table",
+    "url": "https://en.wikipedia.org/wiki/Euro_Stoxx_50",
+    "symbol_col": "Ticker",
+    "name_col": "Name",
+    "table_match": "Main listing",
+    "tested": true,
+    "note": "use 'Main listing' column -> Yahoo suffix (.PA .DE .AS .MI .MC .BR .HE .LS .IR)"
+   },
+   "yahoo_suffix": "per-row",
+   "approx_size": 50,
+   "large": false,
+   "default": true,
+   "enabled": true,
+   "added_by": "default",
+   "added_on": "2026-11-27",
+   "constituents_asof": null,
+   "constituents_n": null,
+   "fallback_source": null,
+   "calendar_regions": []
+  },
+  {
+   "id": "stoxx-europe-600",
+   "name": "STOXX Europe 600",
+   "group": "regional",
+   "region": "Europe",
+   "wikipedia_url": "https://en.wikipedia.org/wiki/STOXX_Europe_600",
+   "constituents_source": {
+    "type": "wikipedia_table",
+    "url": "https://en.wikipedia.org/wiki/STOXX_Europe_600",
+    "symbol_col": "Ticker",
+    "name_col": "Company",
+    "table_match": null,
+    "tested": true,
+    "note": "has 'Main listing' column; 600 rows"
+   },
+   "yahoo_suffix": "per-row",
+   "approx_size": 600,
+   "large": true,
+   "default": true,
+   "enabled": true,
+   "added_by": "default",
+   "added_on": "2026-11-27",
+   "constituents_asof": null,
+   "constituents_n": null,
+   "fallback_source": null,
+   "calendar_regions": []
+  },
+  {
+   "id": "sp-europe-350",
+   "name": "S&P Europe 350",
+   "group": "regional",
+   "region": "Europe",
+   "wikipedia_url": "https://en.wikipedia.org/wiki/S%26P_Europe_350",
+   "constituents_source": {
+    "type": "none",
+    "tested": false,
+    "note": "no parseable constituent table found on 2026-11-27; ask the user for a list (paste or file) or a page URL"
+   },
+   "yahoo_suffix": "per-row",
+   "approx_size": 350,
+   "large": false,
+   "default": true,
+   "enabled": true,
+   "added_by": "default",
+   "added_on": "2026-11-27",
+   "constituents_asof": null,
+   "constituents_n": null,
+   "fallback_source": null,
+   "calendar_regions": []
+  },
+  {
+   "id": "ubs-100",
+   "name": "UBS 100 Index",
+   "group": "regional",
+   "region": "Europe",
+   "wikipedia_url": "https://en.wikipedia.org/wiki/UBS_100_Index",
+   "constituents_source": {
+    "type": "none",
+    "tested": false,
+    "note": "no parseable constituent table found on 2026-11-27; ask the user for a list (paste or file) or a page URL"
+   },
+   "yahoo_suffix": ".SW",
+   "approx_size": 100,
+   "large": false,
+   "default": true,
+   "enabled": true,
+   "added_by": "default",
+   "added_on": "2026-11-27",
+   "constituents_asof": null,
+   "constituents_n": null,
+   "fallback_source": null,
+   "calendar_regions": []
+  },
+  {
+   "id": "sp-latin-america-40",
+   "name": "S&P Latin America 40",
+   "group": "regional",
+   "region": "Latin America",
+   "wikipedia_url": "https://en.wikipedia.org/wiki/S%26P_Latin_America_40",
+   "constituents_source": {
+    "type": "wikipedia_table",
+    "url": "https://en.wikipedia.org/wiki/S%26P_Latin_America_40",
+    "symbol_col": "Ticker symbol",
+    "name_col": "Company name",
+    "table_match": null,
+    "tested": true,
+    "note": "per-row suffix (.SA .MX .SN ...) or US ADR"
+   },
+   "yahoo_suffix": "per-row",
+   "approx_size": 40,
+   "large": false,
+   "default": true,
+   "enabled": true,
+   "added_by": "default",
+   "added_on": "2026-11-27",
+   "constituents_asof": null,
+   "constituents_n": null,
+   "fallback_source": null,
+   "calendar_regions": []
+  },
+  {
+   "id": "nyse-arca-major-market",
+   "name": "NYSE Arca Major Market Index",
+   "group": "national",
+   "region": "United States",
+   "wikipedia_url": "https://en.wikipedia.org/wiki/List_of_stock_market_indices#United_States",
+   "constituents_source": {
+    "type": "none",
+    "tested": false,
+    "note": "no parseable constituent table found on 2026-11-27; ask the user for a list (paste or file) or a page URL"
+   },
+   "yahoo_suffix": "",
+   "approx_size": 20,
+   "large": false,
+   "default": true,
+   "enabled": true,
+   "added_by": "default",
+   "added_on": "2026-11-27",
+   "constituents_asof": null,
+   "constituents_n": null,
+   "fallback_source": null,
+   "calendar_regions": [
+    "us"
+   ]
+  },
+  {
+   "id": "djia",
+   "name": "Dow Jones Industrial Average",
+   "group": "national",
+   "region": "United States",
+   "wikipedia_url": "https://en.wikipedia.org/wiki/List_of_stock_market_indices#United_States",
+   "constituents_source": {
+    "type": "none",
+    "tested": false,
+    "note": "Wikipedia page had no parseable table on 2026-11-27; use fallback_source"
+   },
+   "yahoo_suffix": "",
+   "approx_size": 30,
+   "large": false,
+   "default": true,
+   "enabled": true,
+   "added_by": "default",
+   "added_on": "2026-11-27",
+   "constituents_asof": null,
+   "constituents_n": null,
+   "fallback_source": [
+    {
+     "type": "slickcharts",
+     "url": "https://www.slickcharts.com/dowjones",
+     "symbol_col": "Symbol",
+     "name_col": "Company",
+     "tested": true,
+     "note": "HTML table; no as-of date, use fetch date"
+    },
+    {
+     "type": "spdr_xlsx",
+     "url": "https://www.ssga.com/library-content/products/fund-data/etfs/us/holdings-daily-us-en-dia.xlsx",
+     "symbol_col": "Ticker",
+     "name_col": "Name",
+     "tested": true,
+     "note": "DIA daily holdings XLSX; header near row 5; cash line excluded; as-of date is in the sheet. ETF holdings are not the official index."
+    }
+   ],
+   "calendar_regions": [
+    "us"
+   ]
+  },
+  {
+   "id": "djta",
+   "name": "Dow Jones Transportation Average",
+   "group": "national",
+   "region": "United States",
+   "wikipedia_url": "https://en.wikipedia.org/wiki/List_of_stock_market_indices#United_States",
+   "constituents_source": {
+    "type": "wikipedia_table",
+    "url": "https://en.wikipedia.org/wiki/Dow_Jones_Transportation_Average",
+    "symbol_col": "Ticker",
+    "name_col": "Company",
+    "table_match": null,
+    "tested": true,
+    "note": null
+   },
+   "yahoo_suffix": "",
+   "approx_size": 20,
+   "large": false,
+   "default": true,
+   "enabled": true,
+   "added_by": "default",
+   "added_on": "2026-11-27",
+   "constituents_asof": null,
+   "constituents_n": null,
+   "fallback_source": null,
+   "calendar_regions": [
+    "us"
+   ]
+  },
+  {
+   "id": "djua",
+   "name": "Dow Jones Utility Average",
+   "group": "national",
+   "region": "United States",
+   "wikipedia_url": "https://en.wikipedia.org/wiki/List_of_stock_market_indices#United_States",
+   "constituents_source": {
+    "type": "wikipedia_table",
+    "url": "https://en.wikipedia.org/wiki/Dow_Jones_Utility_Average",
+    "symbol_col": "Ticker",
+    "name_col": "Company",
+    "table_match": null,
+    "tested": true,
+    "note": null
+   },
+   "yahoo_suffix": "",
+   "approx_size": 15,
+   "large": false,
+   "default": true,
+   "enabled": true,
+   "added_by": "default",
+   "added_on": "2026-11-27",
+   "constituents_asof": null,
+   "constituents_n": null,
+   "fallback_source": null,
+   "calendar_regions": [
+    "us"
+   ]
+  },
+  {
+   "id": "barrons-400",
+   "name": "Barron's 400 Index",
+   "group": "national",
+   "region": "United States",
+   "wikipedia_url": "https://en.wikipedia.org/wiki/List_of_stock_market_indices#United_States",
+   "constituents_source": {
+    "type": "none",
+    "tested": false,
+    "note": "no parseable constituent table found on 2026-11-27; ask the user for a list (paste or file) or a page URL"
+   },
+   "yahoo_suffix": "",
+   "approx_size": 400,
+   "large": false,
+   "default": true,
+   "enabled": true,
+   "added_by": "default",
+   "added_on": "2026-11-27",
+   "constituents_asof": null,
+   "constituents_n": null,
+   "fallback_source": null,
+   "calendar_regions": [
+    "us"
+   ]
+  },
+  {
+   "id": "nasdaq-composite",
+   "name": "Nasdaq Composite",
+   "group": "national",
+   "region": "United States",
+   "wikipedia_url": "https://en.wikipedia.org/wiki/List_of_stock_market_indices#United_States",
+   "constituents_source": {
+    "type": "none",
+    "tested": false,
+    "note": "no parseable constituent table found on 2026-11-27; ask the user for a list (paste or file) or a page URL"
+   },
+   "yahoo_suffix": "",
+   "approx_size": 3000,
+   "large": true,
+   "default": true,
+   "enabled": true,
+   "added_by": "default",
+   "added_on": "2026-11-27",
+   "constituents_asof": null,
+   "constituents_n": null,
+   "fallback_source": null,
+   "calendar_regions": [
+    "us"
+   ]
+  },
+  {
+   "id": "nasdaq-100",
+   "name": "Nasdaq-100",
+   "group": "national",
+   "region": "United States",
+   "wikipedia_url": "https://en.wikipedia.org/wiki/List_of_stock_market_indices#United_States",
+   "constituents_source": {
+    "type": "none",
+    "tested": false,
+    "note": "Wikipedia page had no parseable table on 2026-11-27; use fallback_source"
+   },
+   "yahoo_suffix": "",
+   "approx_size": 100,
+   "large": false,
+   "default": true,
+   "enabled": true,
+   "added_by": "default",
+   "added_on": "2026-11-27",
+   "constituents_asof": null,
+   "constituents_n": null,
+   "fallback_source": {
+    "type": "slickcharts",
+    "url": "https://www.slickcharts.com/nasdaq100",
+    "symbol_col": "Symbol",
+    "name_col": "Company",
+    "tested": true,
+    "note": "HTML table; no as-of date, use fetch date"
+   },
+   "calendar_regions": [
+    "us"
+   ]
+  },
+  {
+   "id": "nasdaq-financial-100",
+   "name": "Nasdaq Financial-100",
+   "group": "national",
+   "region": "United States",
+   "wikipedia_url": "https://en.wikipedia.org/wiki/List_of_stock_market_indices#United_States",
+   "constituents_source": {
+    "type": "none",
+    "tested": false,
+    "note": "no parseable constituent table found on 2026-11-27; ask the user for a list (paste or file) or a page URL"
+   },
+   "yahoo_suffix": "",
+   "approx_size": 100,
+   "large": false,
+   "default": true,
+   "enabled": true,
+   "added_by": "default",
+   "added_on": "2026-11-27",
+   "constituents_asof": null,
+   "constituents_n": null,
+   "fallback_source": null,
+   "calendar_regions": [
+    "us"
+   ]
+  },
+  {
+   "id": "russell-3000",
+   "name": "Russell 3000",
+   "group": "national",
+   "region": "United States",
+   "wikipedia_url": "https://en.wikipedia.org/wiki/List_of_stock_market_indices#United_States",
+   "constituents_source": {
+    "type": "none",
+    "tested": false,
+    "note": "no parseable constituent table found on 2026-11-27; ask the user for a list (paste or file) or a page URL"
+   },
+   "yahoo_suffix": "",
+   "approx_size": 3000,
+   "large": true,
+   "default": true,
+   "enabled": true,
+   "added_by": "default",
+   "added_on": "2026-11-27",
+   "constituents_asof": null,
+   "constituents_n": null,
+   "fallback_source": null,
+   "calendar_regions": [
+    "us"
+   ]
+  },
+  {
+   "id": "russell-1000",
+   "name": "Russell 1000",
+   "group": "national",
+   "region": "United States",
+   "wikipedia_url": "https://en.wikipedia.org/wiki/List_of_stock_market_indices#United_States",
+   "constituents_source": {
+    "type": "none",
+    "tested": false,
+    "note": "no parseable constituent table found on 2026-11-27; ask the user for a list (paste or file) or a page URL"
+   },
+   "yahoo_suffix": "",
+   "approx_size": 1000,
+   "large": true,
+   "default": true,
+   "enabled": true,
+   "added_by": "default",
+   "added_on": "2026-11-27",
+   "constituents_asof": null,
+   "constituents_n": null,
+   "fallback_source": null,
+   "calendar_regions": [
+    "us"
+   ]
+  },
+  {
+   "id": "russell-top-200",
+   "name": "Russell Top 200",
+   "group": "national",
+   "region": "United States",
+   "wikipedia_url": "https://en.wikipedia.org/wiki/List_of_stock_market_indices#United_States",
+   "constituents_source": {
+    "type": "none",
+    "tested": false,
+    "note": "no parseable constituent table found on 2026-11-27; ask the user for a list (paste or file) or a page URL"
+   },
+   "yahoo_suffix": "",
+   "approx_size": 200,
+   "large": false,
+   "default": true,
+   "enabled": true,
+   "added_by": "default",
+   "added_on": "2026-11-27",
+   "constituents_asof": null,
+   "constituents_n": null,
+   "fallback_source": null,
+   "calendar_regions": [
+    "us"
+   ]
+  },
+  {
+   "id": "russell-midcap",
+   "name": "Russell MidCap",
+   "group": "national",
+   "region": "United States",
+   "wikipedia_url": "https://en.wikipedia.org/wiki/List_of_stock_market_indices#United_States",
+   "constituents_source": {
+    "type": "none",
+    "tested": false,
+    "note": "no parseable constituent table found on 2026-11-27; ask the user for a list (paste or file) or a page URL"
+   },
+   "yahoo_suffix": "",
+   "approx_size": 800,
+   "large": false,
+   "default": true,
+   "enabled": true,
+   "added_by": "default",
+   "added_on": "2026-11-27",
+   "constituents_asof": null,
+   "constituents_n": null,
+   "fallback_source": null,
+   "calendar_regions": [
+    "us"
+   ]
+  },
+  {
+   "id": "russell-2500",
+   "name": "Russell 2500",
+   "group": "national",
+   "region": "United States",
+   "wikipedia_url": "https://en.wikipedia.org/wiki/List_of_stock_market_indices#United_States",
+   "constituents_source": {
+    "type": "none",
+    "tested": false,
+    "note": "no parseable constituent table found on 2026-11-27; ask the user for a list (paste or file) or a page URL"
+   },
+   "yahoo_suffix": "",
+   "approx_size": 2500,
+   "large": true,
+   "default": true,
+   "enabled": true,
+   "added_by": "default",
+   "added_on": "2026-11-27",
+   "constituents_asof": null,
+   "constituents_n": null,
+   "fallback_source": null,
+   "calendar_regions": [
+    "us"
+   ]
+  },
+  {
+   "id": "russell-small-cap-completeness",
+   "name": "Russell Small Cap Completeness",
+   "group": "national",
+   "region": "United States",
+   "wikipedia_url": "https://en.wikipedia.org/wiki/List_of_stock_market_indices#United_States",
+   "constituents_source": {
+    "type": "none",
+    "tested": false,
+    "note": "no parseable constituent table found on 2026-11-27; ask the user for a list (paste or file) or a page URL"
+   },
+   "yahoo_suffix": "",
+   "approx_size": 3000,
+   "large": true,
+   "default": true,
+   "enabled": true,
+   "added_by": "default",
+   "added_on": "2026-11-27",
+   "constituents_asof": null,
+   "constituents_n": null,
+   "fallback_source": null,
+   "calendar_regions": [
+    "us"
+   ]
+  },
+  {
+   "id": "sp-100",
+   "name": "S&P 100",
+   "group": "national",
+   "region": "United States",
+   "wikipedia_url": "https://en.wikipedia.org/wiki/List_of_stock_market_indices#United_States",
+   "constituents_source": {
+    "type": "wikipedia_table",
+    "url": "https://en.wikipedia.org/wiki/S%26P_100",
+    "symbol_col": "Symbol",
+    "name_col": "Name",
+    "table_match": null,
+    "tested": true,
+    "note": null
+   },
+   "yahoo_suffix": "",
+   "approx_size": 100,
+   "large": false,
+   "default": true,
+   "enabled": true,
+   "added_by": "default",
+   "added_on": "2026-11-27",
+   "constituents_asof": null,
+   "constituents_n": null,
+   "fallback_source": null,
+   "calendar_regions": [
+    "us"
+   ]
+  },
+  {
+   "id": "sp-500",
+   "name": "S&P 500",
+   "group": "national",
+   "region": "United States",
+   "wikipedia_url": "https://en.wikipedia.org/wiki/List_of_stock_market_indices#United_States",
+   "constituents_source": {
+    "type": "wikipedia_table",
+    "url": "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
+    "symbol_col": "Symbol",
+    "name_col": "Security",
+    "table_match": null,
+    "tested": true,
+    "note": "503 rows; Wikipedia 'BRK.B' -> Yahoo 'BRK-B'"
+   },
+   "yahoo_suffix": "",
+   "approx_size": 500,
+   "large": false,
+   "default": true,
+   "enabled": true,
+   "added_by": "default",
+   "added_on": "2026-11-27",
+   "constituents_asof": null,
+   "constituents_n": null,
+   "fallback_source": [
+    {
+     "type": "slickcharts",
+     "url": "https://www.slickcharts.com/sp500",
+     "symbol_col": "Symbol",
+     "name_col": "Company",
+     "tested": true,
+     "note": "HTML table; no as-of date, use fetch date"
+    },
+    {
+     "type": "spdr_xlsx",
+     "url": "https://www.ssga.com/library-content/products/fund-data/etfs/us/holdings-daily-us-en-spy.xlsx",
+     "symbol_col": "Ticker",
+     "name_col": "Name",
+     "tested": true,
+     "note": "SPY daily holdings XLSX. Includes names that are not in the S&P 500 and a cash line; used only if Wikipedia and Slickcharts do not answer."
+    }
+   ],
+   "calendar_regions": [
+    "us"
+   ]
+  },
+  {
+   "id": "sp-midcap-400",
+   "name": "S&P MidCap 400",
+   "group": "national",
+   "region": "United States",
+   "wikipedia_url": "https://en.wikipedia.org/wiki/List_of_stock_market_indices#United_States",
+   "constituents_source": {
+    "type": "wikipedia_table",
+    "url": "https://en.wikipedia.org/wiki/List_of_S%26P_400_companies",
+    "symbol_col": "Symbol",
+    "name_col": "Security",
+    "table_match": "Symbol",
+    "tested": true,
+    "note": null
+   },
+   "yahoo_suffix": "",
+   "approx_size": 400,
+   "large": false,
+   "default": true,
+   "enabled": true,
+   "added_by": "default",
+   "added_on": "2026-11-27",
+   "constituents_asof": null,
+   "constituents_n": null,
+   "fallback_source": {
+    "type": "spdr_xlsx",
+    "url": "https://www.ssga.com/library-content/products/fund-data/etfs/us/holdings-daily-us-en-mdy.xlsx",
+    "symbol_col": "Ticker",
+    "name_col": "Name",
+    "tested": true,
+    "note": "MDY daily holdings XLSX for the S&P MidCap 400. ETF holdings can differ from the official index."
+   },
+   "calendar_regions": [
+    "us"
+   ]
+  },
+  {
+   "id": "sp-smallcap-600",
+   "name": "S&P SmallCap 600",
+   "group": "national",
+   "region": "United States",
+   "wikipedia_url": "https://en.wikipedia.org/wiki/List_of_stock_market_indices#United_States",
+   "constituents_source": {
+    "type": "wikipedia_table",
+    "url": "https://en.wikipedia.org/wiki/List_of_S%26P_600_companies",
+    "symbol_col": "Symbol",
+    "name_col": "Security",
+    "table_match": "Symbol",
+    "tested": true,
+    "note": null
+   },
+   "yahoo_suffix": "",
+   "approx_size": 600,
+   "large": false,
+   "default": true,
+   "enabled": true,
+   "added_by": "default",
+   "added_on": "2026-11-27",
+   "constituents_asof": null,
+   "constituents_n": null,
+   "fallback_source": null,
+   "calendar_regions": [
+    "us"
+   ]
+  },
+  {
+   "id": "sp-1500",
+   "name": "S&P 1500",
+   "group": "national",
+   "region": "United States",
+   "wikipedia_url": "https://en.wikipedia.org/wiki/List_of_stock_market_indices#United_States",
+   "constituents_source": {
+    "type": "composite",
+    "of": [
+     "sp-500",
+     "sp-midcap-400",
+     "sp-smallcap-600"
+    ],
+    "tested": true
+   },
+   "yahoo_suffix": "",
+   "approx_size": 1500,
+   "large": true,
+   "default": true,
+   "enabled": true,
+   "added_by": "default",
+   "added_on": "2026-11-27",
+   "constituents_asof": null,
+   "constituents_n": null,
+   "fallback_source": null,
+   "calendar_regions": [
+    "us"
+   ]
+  },
+  {
+   "id": "value-line-composite",
+   "name": "Value Line Composite Index",
+   "group": "national",
+   "region": "United States",
+   "wikipedia_url": "https://en.wikipedia.org/wiki/List_of_stock_market_indices#United_States",
+   "constituents_source": {
+    "type": "none",
+    "tested": false,
+    "note": "no parseable constituent table found on 2026-11-27; ask the user for a list (paste or file) or a page URL"
+   },
+   "yahoo_suffix": "",
+   "approx_size": 1700,
+   "large": true,
+   "default": true,
+   "enabled": true,
+   "added_by": "default",
+   "added_on": "2026-11-27",
+   "constituents_asof": null,
+   "constituents_n": null,
+   "fallback_source": null,
+   "calendar_regions": [
+    "us"
+   ]
+  },
+  {
+   "id": "wilshire-5000",
+   "name": "Wilshire 5000",
+   "group": "national",
+   "region": "United States",
+   "wikipedia_url": "https://en.wikipedia.org/wiki/List_of_stock_market_indices#United_States",
+   "constituents_source": {
+    "type": "none",
+    "tested": false,
+    "note": "no parseable constituent table found on 2026-11-27; ask the user for a list (paste or file) or a page URL"
+   },
+   "yahoo_suffix": "",
+   "approx_size": 3500,
+   "large": true,
+   "default": true,
+   "enabled": true,
+   "added_by": "default",
+   "added_on": "2026-11-27",
+   "constituents_asof": null,
+   "constituents_n": null,
+   "fallback_source": null,
+   "calendar_regions": [
+    "us"
+   ]
+  },
+  {
+   "id": "wilshire-4500",
+   "name": "Wilshire 4500",
+   "group": "national",
+   "region": "United States",
+   "wikipedia_url": "https://en.wikipedia.org/wiki/List_of_stock_market_indices#United_States",
+   "constituents_source": {
+    "type": "none",
+    "tested": false,
+    "note": "no parseable constituent table found on 2026-11-27; ask the user for a list (paste or file) or a page URL"
+   },
+   "yahoo_suffix": "",
+   "approx_size": 3500,
+   "large": true,
+   "default": true,
+   "enabled": true,
+   "added_by": "default",
+   "added_on": "2026-11-27",
+   "constituents_asof": null,
+   "constituents_n": null,
+   "fallback_source": null,
+   "calendar_regions": [
+    "us"
+   ]
+  },
+  {
+   "id": "sp-tsx-60",
+   "name": "S&P/TSX 60",
+   "group": "national",
+   "region": "Canada",
+   "wikipedia_url": "https://en.wikipedia.org/wiki/S%26P/TSX_60",
+   "constituents_source": {
+    "type": "wikipedia_table",
+    "url": "https://en.wikipedia.org/wiki/S%26P/TSX_60",
+    "symbol_col": "Symbol",
+    "name_col": "Company",
+    "table_match": null,
+    "tested": true,
+    "note": "append .TO; '.' -> '-' (BBD.B -> BBD-B.TO)"
+   },
+   "yahoo_suffix": ".TO",
+   "approx_size": 60,
+   "large": false,
+   "default": true,
+   "enabled": true,
+   "added_by": "default",
+   "added_on": "2026-11-27",
+   "constituents_asof": null,
+   "constituents_n": null,
+   "fallback_source": {
+    "type": "ishares_csv",
+    "url": "https://www.blackrock.com/ca/investors/en/products/239832/ishares-sptsx-60-index-etf/1464253357814.ajax?fileType=csv&fileName=XIU_holdings&dataType=fund",
+    "symbol_col": "Ticker",
+    "name_col": "Name",
+    "tested": true,
+    "note": "iShares XIU (product 239832) holdings CSV; equity rows only; as-of date is in the file. Used when the Wikipedia table does not answer. ETF holdings can include a residual line that is not an index member."
+   },
+   "calendar_regions": [
+    "ca"
+   ]
+  },
+  {
+   "id": "sp-tsx-composite",
+   "name": "S&P/TSX Composite Index",
+   "group": "national",
+   "region": "Canada",
+   "wikipedia_url": "https://en.wikipedia.org/wiki/S%26P/TSX_Composite_Index",
+   "constituents_source": {
+    "type": "wikipedia_table",
+    "url": "https://en.wikipedia.org/wiki/S%26P/TSX_Composite_Index",
+    "symbol_col": "Ticker",
+    "name_col": "Company",
+    "table_match": "Ticker",
+    "tested": true,
+    "note": "221 rows; append .TO; '.' -> '-'"
+   },
+   "yahoo_suffix": ".TO",
+   "approx_size": 221,
+   "large": false,
+   "default": true,
+   "enabled": true,
+   "added_by": "default",
+   "added_on": "2026-11-27",
+   "constituents_asof": null,
+   "constituents_n": null,
+   "fallback_source": {
+    "type": "ishares_csv",
+    "url": "https://www.blackrock.com/ca/investors/en/products/239837/ishares-sptsx-capped-composite-index-etf/1464253357814.ajax?fileType=csv&fileName=XIC_holdings&dataType=fund",
+    "symbol_col": "Ticker",
+    "name_col": "Name",
+    "tested": true,
+    "note": "iShares XIC (product 239837) holdings CSV for the S&P/TSX Capped Composite. Equity rows only. Used when the Wikipedia table does not answer."
+   },
+   "calendar_regions": [
+    "ca"
+   ]
+  },
+  {
+   "id": "sp-tsx-venture-composite",
+   "name": "S&P/TSX Venture Composite Index",
+   "group": "national",
+   "region": "Canada",
+   "wikipedia_url": "https://en.wikipedia.org/wiki/S%26P/TSX_Venture_Composite_Index",
+   "constituents_source": {
+    "type": "none",
+    "tested": false,
+    "note": "no parseable constituent table found on 2026-11-27; ask the user for a list (paste or file) or a page URL"
+   },
+   "yahoo_suffix": ".V",
+   "approx_size": 500,
+   "large": true,
+   "default": true,
+   "enabled": true,
+   "added_by": "default",
+   "added_on": "2026-11-27",
+   "constituents_asof": null,
+   "constituents_n": null,
+   "fallback_source": null,
+   "calendar_regions": [
+    "ca"
+   ]
+  }
+ ]
+}

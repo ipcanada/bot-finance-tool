@@ -8,6 +8,7 @@ Data tools for a Grok Bot finance research analyst template. `fin.py` is a marke
 git clone https://github.com/ipcanada/bot-finance-tool /home/box/finance-tools
 cd /home/box/finance-tools
 pip install --user yfinance requests
+# optional, only for charts: pip install --user matplotlib
 export SEC_USER_AGENT="Jane Analyst jane@example.com"   # SEC requires a name and contact email
 # optional free-tier keys:
 # export ALPHAVANTAGE_API_KEY=...
@@ -66,6 +67,8 @@ Document download is `fin.py sedar CSU.TO --document 'https://www.sedarplus.ca/.
 
 ```bash
 pip install --user yfinance requests      # add --break-system-packages on Debian/Ubuntu if pip refuses
+# optional, only for `chart income-sankey`:
+# pip install --user matplotlib            # Pillow comes with it; SVG logos also need cairosvg
 export SEC_USER_AGENT="Jane Analyst jane@example.com"   # SEC requires a real contact
 export ALPHAVANTAGE_API_KEY=...   # optional, free at alphavantage.co/support/#api-key
 export FINNHUB_API_KEY=...        # optional, free at finnhub.io/register
@@ -100,7 +103,8 @@ Tickers are Yahoo-style: `AAPL`, `BRK-B`, `RY.TO`, `SHOP.TO`, `XYZ.V`. EDGAR com
 | `transcripts` | alphavantage → finnhub (premium) | `fin.py transcripts IBM --quarter 2024Q1 --grep guidance` |
 | `constituents` | registry order: Wikipedia table, then fallback (Slickcharts, SPDR XLSX, iShares Canada CSV), then a user file | `fin.py constituents tsx60` |
 | `earnings-calendar` | Finnhub calendar if `FINNHUB_API_KEY` is set, else Yahoo screener (US/CA), then per-ticker Yahoo dates for names the bulk pass missed | `fin.py earnings-calendar --index sp500 --from 2026-12-01 --to 2026-12-04` |
-| `doctor` | local | key/UA status |
+| `chart income-sankey` | a CSV/JSON spec, or `financials` when `--from` is set | `fin.py chart income-sankey --spec examples/spacex-q3-2026-income-sankey.json --out chart.png` |
+| `doctor` | local | key/UA status, and whether charting is installed |
 
 Useful XBRL concepts: `Revenues`, `RevenueFromContractWithCustomerExcludingAssessedTax`,
 `NetIncomeLoss`, `EarningsPerShareDiluted`, `OperatingIncomeLoss`, `CashAndCashEquivalentsAtCarryingValue`,
@@ -119,6 +123,35 @@ Symbols are mapped to Yahoo tickers with the registry suffix (`.` in a class sha
 `earnings-calendar --from YYYY-MM-DD --to YYYY-MM-DD` takes `--index`, or `--tickers` / `--symbols-file` instead of an index, or `--region us,ca` for the screener alone. The bulk pass calls Finnhub `calendar/earnings` when `FINNHUB_API_KEY` is set. Otherwise it pages the Yahoo earnings screener through `yfinance.Calendars` (yfinance 1.8 or newer): the public method for `us`, and `Calendars._get_data` with a region for `ca`. Yahoo's end bound is midnight at the start of `--to`, so the request runs through the next date and the rows are filtered back to the requested dates. Rows are intersected with the constituents. Names the bulk pass missed, and every mapped name on a non-US/CA index, get one `yfinance` earnings-date lookup (at most 4 workers, one retry if Yahoo throttles). The Nasdaq.com API is not called. JSON rows have `date`, `ticker`, `company`, `timing` (`BMO`, `AMC`, `intraday`, or `unknown`), `eps_estimate`, `source`, and `asof`. `counts` includes `found`, `no_date`, and `unmapped`. `--csv` and `--md` write the same rows beside the JSON. Yahoo dates are marked `projected`.
 
 On HTTP 401, 403, 406, or 429, or on a captcha / browser-check page, that source stops. The attempt is `skipped` and the message starts with `blocked`. There is no second request, no alternate User-Agent, and no browser. Exit code is 2 when no source answered.
+
+## Charts
+
+`chart income-sankey` draws an income statement as a left-to-right flow: segments into revenue, revenue into gross profit and cost of revenue, gross profit into operating profit and operating expenses, operating expenses into R&D / SG&A / other, and operating profit plus other income and tax into net profit. It reads a spec file. It does not contain any company's figures.
+
+```bash
+pip install --user matplotlib          # optional; other fin.py commands do not need it
+# SVG logos also need: pip install --user cairosvg
+python3 fin.py chart income-sankey \
+  --spec examples/spacex-q3-2026-income-sankey.json \
+  --byline "Gordon Gekko" \
+  --byline-icon /path/to/icon.png \
+  --logo /path/to/logo.svg \
+  --logo-width 320 \
+  --out chart.png \
+  --svg chart.svg
+```
+
+The spec is JSON or CSV. JSON is the shape in `examples/spacex-q3-2026-income-sankey.json`: `segments`, `revenue`, `cost_of_revenue`, `gross_profit`, `operating_expenses.children`, `operating_profit`, `bridges` (other income, tax benefit or expense), `net_profit`, plus `title`, `byline`, `byline_color`, `footer`, `currency`, and `unit` (`millions` by default). Each line has `label`, `value`, optional `prior`, optional `yy` (omit to compute, `null` to hide), and optional `note`. Values are signed: positive profit and positive bridge amounts flow in; a negative operating profit or net profit is a loss. Expense lines (`cost_of_revenue`, operating expenses and their children) are positive magnitudes. CSV uses a `section` column (`segment`, `revenue`, `opex_child`, `bridge`, `footer`, …). The same SpaceX quarter is also in `examples/spacex-q3-2026-income-sankey.csv`.
+
+Y/Y and margin annotations are computed from `value` and `prior` unless the spec sets them. A prior that is missing, zero, or negative does not produce a growth rate. Losses are drawn in red; the chart does not invent a ribbon through a negative remainder.
+
+`--title`, `--byline`, `--byline-icon`, `--byline-color`, `--logo`, `--logo-width`, `--footer` (repeatable), `--width`, `--height`, and `--dpi` override the spec. The logo keeps its aspect ratio. Its right edge lines up with the right-most chart ink and it is centered on the title. The byline sits about 23px under the title. Pass your own icon and logo paths; this repo does not ship company marks. Open Sans is bundled under `fonts/` with its SIL Open Font License (`fonts/OFL.txt`). If those files are missing, the chart uses DejaVu Sans.
+
+`--from AAPL --period quarterly` builds a draft spec from the `financials` command and renders it. `--spec-out draft.json` writes that spec. `--no-render` writes the spec and skips matplotlib. The draft is labeled as needing review. Its footer keeps the source name, the source URL, the retrieval time, and the note that aggregator statements are normalized and can differ from as-filed figures. Segment disclosure is not in those statements, so a draft has no segments until you add them.
+
+If matplotlib is missing, the command still prints JSON and exits 2. The message tells you to `pip install matplotlib`. `fin.py doctor` reports matplotlib, Pillow, cairosvg, and the font under `charting`.
+
+![SpaceX Q3 2026 income-statement Sankey, rendered from the example spec without a logo or byline icon](examples/spacex-q3-2026-income-sankey.png)
 
 ## Output contract
 

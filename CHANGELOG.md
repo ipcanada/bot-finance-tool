@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.3.0 — 2026-11-28
+
+### Added
+
+- The revenue node and the revenue and segment labels follow the logo's main color. The logo file is drawn unchanged. With no logo, or when that color is white or near-white, the revenue color stays navy `#14213D`. A color within CIEDE2000 18 of the cost red `#D9534F` or the profit green `#2E9E5B` is shifted, darker and in the same hue family when that still clears both. A dark logo color with contrast under 3:1 on `#ECECEC` is nudged darker; near-black with enough contrast is kept. `--revenue-color HEX` or a `revenue_color` spec field overrides detection. `--revenue-color auto` is the default when a logo is given. The command JSON reports `revenue_color.detected` and `revenue_color.final`.
+
+### Unchanged
+
+Segment nodes stay `#3B5B8C`. The title stays navy. The footer stays gray. The byline keeps its own color.
+
 ## 1.2.0 — 2026-11-28
 
 ### Added
